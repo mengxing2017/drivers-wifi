@@ -4,6 +4,6 @@
 
 group("wifi") {
   deps = [
-    "//drivers/wifi/qualcomm",
+    "//drivers/wifi/qualcomm/qca6174",
   ]
 }
