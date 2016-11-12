@@ -2,9 +2,13 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
-group("wifi") {
-  deps = [
-    "//drivers/wifi/qualcomm/qca6174",
-    "//drivers/wifi/mediatek/rt5370",
+shared_library("rt5370") {
+  sources = [
+    "binding.c",
+    "driver.cpp",
+  ]
+
+  libs = [
+    "ddk",
   ]
 }
