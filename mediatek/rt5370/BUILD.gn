@@ -5,6 +5,7 @@
 shared_library("rt5370") {
   sources = [
     "binding.c",
+    "device.cpp",
     "driver.cpp",
   ]
 

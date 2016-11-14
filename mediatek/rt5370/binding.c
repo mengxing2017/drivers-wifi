@@ -21,6 +21,6 @@ mx_driver_t _driver_mediatek_rt5370 = {
 
 MAGENTA_DRIVER_BEGIN(_driver_mediatek_rt5370, "mediatek-rt5370", "magenta", "0.1", 3)
     BI_ABORT_IF(NE, BIND_PROTOCOL, MX_PROTOCOL_USB),
-    BI_ABORT_IF(NE, BIND_USB_VID, 0x14af),
+    BI_ABORT_IF(NE, BIND_USB_VID, 0x148f),
     BI_MATCH_IF(EQ, BIND_USB_PID, 0x5370),
 MAGENTA_DRIVER_END(_driver_mediatek_rt5370)
