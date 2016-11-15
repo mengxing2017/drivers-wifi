@@ -12,4 +12,11 @@ shared_library("rt5370") {
   libs = [
     "ddk",
   ]
+
+  data_deps = [ ":rt5370-firmware" ]
+}
+
+copy("rt5370-firmware") {
+  sources = [ "rt2870.bin" ]
+  outputs = [ "$root_out_dir/rt2870.bin" ]
 }
