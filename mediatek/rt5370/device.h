@@ -7,6 +7,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <vector>
@@ -29,6 +30,10 @@ class Device {
     };
 
     mx_status_t ReadRegister(uint16_t offset, uint32_t* value);
+    mx_status_t WriteRegister(uint16_t offset, uint32_t value);
+
+    mx_status_t ReadEeprom();
+    mx_status_t ValidateEeprom();
 
     // DDK API
     void Unbind();
@@ -45,7 +50,6 @@ class Device {
     static ssize_t DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
                             size_t in_len, void* out_buf, size_t out_len);
 
-
     mx_driver_t* driver_;
     mx_device_t* usb_device_;
     mx_device_t device_;
@@ -53,6 +57,13 @@ class Device {
     uint8_t rx_endpt_ = 0;
     //uint8_t beacon_endpt_ = 0;
     std::vector<uint8_t> tx_endpts_;
+
+    constexpr static size_t kEepromSize = 0x0100;
+    std::array<uint16_t, kEepromSize> eeprom_ = {};
+
+    uint16_t rt_type_ = 0;
+    uint16_t rt_rev_ = 0;
+    uint16_t rf_type_ = 0;
 };
 
 }  // namespace rt5370

@@ -26,13 +26,53 @@ enum UsbModeOffset : uint8_t {
     kAutorun = 17,
 };
 
+constexpr uint16_t RT5390 = 0x5390;
+
 constexpr uint16_t MAC_CSR0 = 0x1000;
 
 constexpr uint16_t EFUSE_CTRL = 0x0580;
+constexpr int EFUSE_CTRL_KICK = 30;
+constexpr int EFUSE_CTRL_ADDR = 16;
+constexpr int EFUSE_CTRL_ADDR_WIDTH = 10;
+constexpr int EFUSE_CTRL_MODE = 6;
 
 constexpr uint16_t EFUSE_DATA0 = 0x0590;
 constexpr uint16_t EFUSE_DATA1 = 0x0594;
 constexpr uint16_t EFUSE_DATA2 = 0x0598;
 constexpr uint16_t EFUSE_DATA3 = 0x059c;
+
+constexpr uint16_t EEPROM_CHIP_ID = 0x0000;
+constexpr uint16_t EEPROM_VERSION = 0x0001;
+constexpr uint16_t EEPROM_MAC_ADDR_0 = 0x0002;
+constexpr uint16_t EEPROM_MAC_ADDR_1 = 0x0003;
+constexpr uint16_t EEPROM_MAC_ADDR_2 = 0x0004;
+constexpr uint16_t EEPROM_NIC_CONF0 = 0x001a;
+constexpr uint16_t EEPROM_NIC_CONF1 = 0x001b;
+constexpr uint16_t EEPROM_FREQ = 0x001d;
+constexpr uint16_t EEPROM_NIC_CONF2 = 0x0021;
+constexpr uint16_t EEPROM_LNA = 0x0022;
+constexpr uint16_t EEPROM_RSSI_BG = 0x0023;
+constexpr uint16_t EEPROM_RSSI_BG2 = 0x0024;
+constexpr uint16_t EEPROM_RSSI_A = 0x0025;
+constexpr uint16_t EEPROM_RSSI_A2 = 0x0026;
+
+constexpr int EEPROM_FREQ_OFFSET = 0;
+constexpr int EEPROM_FREQ_WIDTH = 8;
+
+constexpr int EEPROM_LNA_A0_OFFSET = 8;
+constexpr int EEPROM_LNA_A0_WIDTH = 8;
+
+constexpr int EEPROM_RSSI_BG_0_OFFSET = 0;
+constexpr int EEPROM_RSSI_BG_0_WIDTH = 8;
+constexpr int EEPROM_RSSI_BG_1_OFFSET = 8;
+constexpr int EEPROM_RSSI_BG_1_WIDTH = 8;
+
+constexpr int EEPROM_RSSI_BG2_OFFSET = 0;
+constexpr int EEPROM_RSSI_BG2_WIDTH = 8;
+constexpr int EEPROM_RSSI_BG2_LNA_A1_OFFSET = 8;
+constexpr int EEPROM_RSSI_BG2_LNA_A1_WIDTH = 8;
+
+constexpr int EEPROM_NIC_CONF1_HW_RADIO   = 0;  // 0x0001
+constexpr int EEPROM_NIC_CONF1_BT_COEXIST = 14; // 0x4000
 
 }  // namespace rt5370
