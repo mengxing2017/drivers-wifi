@@ -23,12 +23,26 @@ enum UsbModeOffset : uint8_t {
     kUnplug = 2,
     kFunction = 3,
     kTest = 4,
+    kFirmware = 8,
     kAutorun = 17,
 };
 
 constexpr uint16_t RT5390 = 0x5390;
+constexpr uint16_t FW_IMAGE_BASE = 0x3000;
 
-constexpr uint16_t MAC_CSR0 = 0x1000;
+// Registers
+
+constexpr uint16_t WPDMA_GLO_CFG = 0x0208;
+constexpr int WPDMA_GLO_CFG_TX_DMA_EN = 0;
+constexpr int WPDMA_GLO_CFG_TX_DMA_BUSY = 1;
+constexpr int WPDMA_GLO_CFG_RX_DMA_EN = 2;
+constexpr int WPDMA_GLO_CFG_RX_DMA_BUSY = 3;
+constexpr int WPDMA_GLO_CFG_TX_WB_DDONE = 6;
+
+constexpr uint16_t SYS_CTRL = 0x0400;
+constexpr int SYS_CTRL_MCU_READY = 7;
+
+constexpr uint16_t HOST_CMD = 0x0404;
 
 constexpr uint16_t EFUSE_CTRL = 0x0580;
 constexpr int EFUSE_CTRL_KICK = 30;
@@ -41,6 +55,11 @@ constexpr uint16_t EFUSE_DATA1 = 0x0594;
 constexpr uint16_t EFUSE_DATA2 = 0x0598;
 constexpr uint16_t EFUSE_DATA3 = 0x059c;
 
+constexpr uint16_t MAC_CSR0 = 0x1000;
+
+constexpr uint16_t AUTO_WAKEUP_CFG = 0x1208;
+
+// EEPROM offsets
 constexpr uint16_t EEPROM_CHIP_ID = 0x0000;
 constexpr uint16_t EEPROM_VERSION = 0x0001;
 constexpr uint16_t EEPROM_MAC_ADDR_0 = 0x0002;
@@ -74,5 +93,22 @@ constexpr int EEPROM_RSSI_BG2_LNA_A1_WIDTH = 8;
 
 constexpr int EEPROM_NIC_CONF1_HW_RADIO   = 0;  // 0x0001
 constexpr int EEPROM_NIC_CONF1_BT_COEXIST = 14; // 0x4000
+
+// Host to MCU communication
+constexpr uint16_t H2M_MAILBOX_CSR = 0x7010;
+constexpr int H2M_MAILBOX_CSR_ARG0_OFFSET = 0;
+constexpr int H2M_MAILBOX_CSR_ARG1_OFFSET = 8;
+constexpr int H2M_MAILBOX_CSR_CMD_TOKEN_OFFSET = 16;
+constexpr int H2M_MAILBOX_CSR_OWNER_OFFSET = 24;
+// All four fields have width 8
+constexpr int H2M_MAILBOX_CSR_WIDTH = 8;
+
+constexpr uint16_t H2M_MAILBOX_CID = 0x7014;
+constexpr uint16_t H2M_MAILBOX_STATUS = 0x701c;
+constexpr uint16_t H2M_INT_SRC = 0x7024;
+constexpr uint16_t H2M_BBP_AGENT = 0x7028;
+
+// MCU commands
+constexpr uint8_t MCU_BOOT_SIGNAL = 0x72;
 
 }  // namespace rt5370

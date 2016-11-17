@@ -9,6 +9,8 @@ shared_library("rt5370") {
     "driver.cpp",
   ]
 
+  deps = [ "//magenta/system/ulib/mx" ]
+
   libs = [
     "ddk",
   ]

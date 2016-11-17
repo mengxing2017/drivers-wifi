@@ -7,10 +7,15 @@
 
 #include <ddk/common/usb.h>
 #include <magenta/hw/usb.h>
+#include <mx/vmo.h>
+#include <mx/time.h>
 
 #include <endian.h>
 
+#include <algorithm>
+#include <chrono>
 #include <cstdio>
+#include <future>
 
 #define CHECK_REG(reg, op, status) \
     do { \
@@ -21,10 +26,24 @@
 #define CHECK_READ(reg, status) CHECK_REG(reg, Read, status)
 #define CHECK_WRITE(reg, status) CHECK_REG(reg, Write, status)
 
+using namespace std::chrono_literals;
+
 namespace {
 
-constexpr static int kMaxBusyReads = 20;
-constexpr static int kRegisterBusyWait = 100 * 1000;  // 100us in nanos
+template <class Rep, class Period>
+mx_status_t mxsleep(std::chrono::duration<Rep, Period> duration) {
+    return mx::nanosleep(std::chrono::nanoseconds(duration).count());
+}
+
+constexpr size_t kReadReqCount = 8;
+constexpr size_t kReadBufSize = 4096;
+constexpr size_t kWriteReqCount = 4;
+constexpr size_t kWriteBufSize = 4096;  // todo: use endpt max size
+
+constexpr char kFirmwareFile[] = "rt2870.bin";
+
+constexpr int kMaxBusyReads = 20;
+constexpr auto kRegisterBusyWait = 100us;
 
 constexpr uint32_t get_bits(uint8_t offset, uint8_t len, uint32_t bitmask) {
     auto mask = ((1 << len) - 1) << offset;
@@ -38,7 +57,7 @@ constexpr uint32_t get_bit(uint8_t offset, uint32_t bitmask) {
 constexpr uint32_t set_bits(uint8_t offset, uint8_t len, uint32_t orig, uint32_t value) {
     auto mask = ((1 << len) - 1) << offset;
     uint32_t ret = orig & ~mask;
-    return ret |= ((value << offset) & mask);
+    return ret | ((value << offset) & mask);
 }
 
 constexpr uint32_t set_bit(uint8_t offset, uint32_t orig) {
@@ -73,24 +92,17 @@ mx_status_t Device::Bind() {
     std::printf("rt5370::Device::Bind\n");
 
     uint32_t mac_csr = 0;
-    mx_status_t status = ReadRegister(MAC_CSR0, &mac_csr);
+    auto status = ReadRegister(MAC_CSR0, &mac_csr);
     CHECK_READ(status, MAC_CSR0);
 
     rt_type_ = (mac_csr >> 16) & 0xffff;
     rt_rev_ = mac_csr & 0xffff;
     std::printf("rt5370 RT chipset %#x, rev %#x\n", rt_type_, rt_rev_);
 
-    uint32_t fw_mode = 0;
-    status = usb_control(usb_device_, (USB_DIR_IN | USB_TYPE_VENDOR), kDeviceMode, kAutorun,
-            0, &fw_mode, sizeof(fw_mode));
-    if (status < 0) {
-        std::printf("rt5370 DeviceMode error: %d\n", status);
+    bool autorun = false;
+    status = DetectAutoRun(&autorun);
+    if (status != NO_ERROR) {
         return status;
-    }
-
-    fw_mode = letoh32(fw_mode);
-    if ((fw_mode & 0x03) == 2) {
-        std::printf("rt5370 AUTORUN\n");
     }
 
     uint32_t efuse_ctrl = 0;
@@ -135,7 +147,38 @@ mx_status_t Device::Bind() {
 
     // TODO: allocate and initialize some queues
 
-    //status = LoadFirm
+    status = LoadFirmware();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 failed to load firmware\n");
+        return status;
+    }
+    std::printf("rt5370 firmware loaded\n");
+
+    // Initialize queues
+    for (size_t i = 0; i < kReadReqCount; i++) {
+        auto* req = usb_alloc_iotxn(rx_endpt_, kReadBufSize, 0);
+        if (req == nullptr) {
+            std::printf("rt5370 failed to allocate rx iotxn\n");
+            return ERR_NO_MEMORY;
+        }
+        req->length = kReadBufSize;
+        req->complete_cb = &Device::ReadIotxnComplete;
+        req->cookie = this;
+        iotxn_queue(usb_device_, req);
+    }
+    auto tx_endpt = tx_endpts_.front();
+    for (size_t i = 0; i < kWriteReqCount; i++) {
+        auto* req = usb_alloc_iotxn(tx_endpt, kWriteBufSize, 0);
+        if (req == nullptr) {
+            std::printf("rt5370 failed to allocate tx iotxn\n");
+            return ERR_NO_MEMORY;
+        }
+        req->length = kWriteBufSize;
+        req->complete_cb = &Device::WriteIotxnComplete;
+        req->cookie = this;
+        free_write_reqs_.push_back(req);
+    }
+
     return NO_ERROR;
 }
 
@@ -153,7 +196,7 @@ mx_status_t Device::ReadEeprom() {
     // Read 4 entries at a time
     for (unsigned int i = 0; i < eeprom_.size(); i += 8) {
         uint32_t reg = 0;
-        mx_status_t status = ReadRegister(EFUSE_CTRL, &reg);
+        auto status = ReadRegister(EFUSE_CTRL, &reg);
         CHECK_READ(EFUSE_CTRL, status);
 
         // Set the address and tell it to load the next four words. Addresses
@@ -170,7 +213,7 @@ mx_status_t Device::ReadEeprom() {
             status = ReadRegister(EFUSE_CTRL, &reg);
             CHECK_READ(EFUSE_CTRL, status);
             if (!get_bit(EFUSE_CTRL_KICK, reg)) break;
-            mx_nanosleep(kRegisterBusyWait);
+            mxsleep(kRegisterBusyWait);
         }
         if (busy == kMaxBusyReads) {
             std::printf("rt5370 Busy-wait for EFUSE_CTRL failed\n");
@@ -264,6 +307,251 @@ mx_status_t Device::ValidateEeprom() {
     return NO_ERROR;
 }
 
+mx_status_t Device::LoadFirmware() {
+    mx_handle_t fw_handle;
+    mx_size_t fw_size = 0;
+    auto status = load_firmware(driver_, kFirmwareFile, &fw_handle, &fw_size);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 failed to load firmware '%s': err=%d\n", kFirmwareFile, status);
+        return status;
+    }
+    std::printf("rt5370 opened firmware '%s' (%zd bytes)\n", kFirmwareFile, fw_size);
+
+    mx::vmo fw(fw_handle);
+    uint8_t fwversion[2];
+    mx_size_t actual = 0;
+    status = fw.read(fwversion, fw_size - 4, 2, &actual);
+    if (status != NO_ERROR || actual != sizeof(fwversion)) {
+        std::printf("rt5370 error reading fw version\n");
+        return ERR_BAD_STATE;
+    }
+    std::printf("rt5370 FW version %u.%u\n", fwversion[0], fwversion[1]);
+    // Linux rt2x00 driver has more intricate size checking for different
+    // chipsets. We just care that it's 8kB for the rt5370.
+    if (fw_size != 8192) {
+        std::printf("rt5370 FW: bad length (%zu)\n", fw_size);
+        return ERR_BAD_STATE;
+    }
+
+    // TODO: check crc, 4kB at a time
+
+    std::printf("rt5370 writing auto wakeup\n");
+    status = WriteRegister(AUTO_WAKEUP_CFG, 0);
+    CHECK_WRITE(AUTO_WAKEUP_CFG, status);
+    std::printf("rt5370 auto wakeup written\n");
+
+    // Wait for hardware to stabilize
+    unsigned int busy = 0;
+    uint32_t reg = 0;
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        status = ReadRegister(MAC_CSR0, &reg);
+        if (reg && reg != ~0u) break;
+        mxsleep(1ms);
+    }
+    if (busy == kMaxBusyReads) {
+        std::printf("rt5370 unstable hardware\n");
+        return ERR_BAD_STATE;
+    }
+    std::printf("rt5370 hardware stabilized\n");
+
+    status = DisableWpdma();
+    if (status != NO_ERROR) return status;
+
+    bool autorun = false;
+    status = DetectAutoRun(&autorun);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    if (autorun) {
+        std::printf("rt5370 not loading firmware, NIC is in autorun mode\n");
+        return NO_ERROR;
+    }
+    std::printf("rt5370 autorun not enabled\n");
+
+    // Send the firmware to the chip
+    // For rt5370, start at offset 4096 and send 4096 bytes
+    mx_size_t offset = 4096;
+    mx_size_t remaining = fw_size - offset;
+    uint8_t buf[64];
+    uint16_t addr = FW_IMAGE_BASE;
+
+    while (remaining) {
+        size_t to_send = std::min(remaining, sizeof(buf));
+        status = fw.read(buf, offset, to_send, &actual);
+        if (status != NO_ERROR || actual != to_send) {
+            std::printf("rt5370 error reading firmware\n");
+            return ERR_BAD_STATE;
+        }
+        status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kMultiWrite,
+                             0, addr, buf, to_send);
+        if (status < (ssize_t)to_send) {
+            std::printf("rt5370 failed to send firmware\n");
+            return ERR_BAD_STATE;
+        }
+        remaining -= to_send;
+        offset += to_send;
+        addr += to_send;
+    }
+    std::printf("rt5370 sent firmware\n");
+
+    status = WriteRegister(H2M_MAILBOX_CID, ~0);
+    CHECK_WRITE(H2M_MAILBOX_CID, status);
+    status = WriteRegister(H2M_MAILBOX_STATUS, ~0);
+    CHECK_WRITE(H2M_MAILBOX_STATUS, status);
+
+    // Tell the device to load the firmware
+    status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kDeviceMode,
+                         kFirmware, 0, NULL, 0);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 failed to send load firmware command\n");
+        return status;
+    }
+    mxsleep(10ms);
+
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        status = ReadRegister(SYS_CTRL, &reg);
+        CHECK_READ(SYS_CTRL, status);
+        if (get_bit(SYS_CTRL_MCU_READY, reg)) break;
+        mxsleep(1ms);
+    }
+    if (busy == kMaxBusyReads) {
+        std::printf("rt5370 system MCU not ready\n");
+        return ERR_TIMED_OUT;
+    }
+
+    // Disable WPDMA again
+    status = DisableWpdma();
+    if (status != NO_ERROR) return status;
+
+    // Initialize firmware and boot the MCU
+    status = WriteRegister(H2M_BBP_AGENT, 0);
+    CHECK_WRITE(H2M_BBP_AGENT, status);
+    status = WriteRegister(H2M_MAILBOX_CSR, 0);
+    CHECK_WRITE(H2M_MAILBOX_CSR, status);
+    status = WriteRegister(H2M_INT_SRC, 0);
+    CHECK_WRITE(H2M_INT_SRC, status);
+    status = McuCommand(MCU_BOOT_SIGNAL, 0, 0, 0);
+    if (status < 0) {
+        std::printf("rt5370 error booting MCU err=%d\n", status);
+        return status;
+    }
+    mxsleep(1ms);
+
+    return NO_ERROR;
+}
+
+mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1) {
+    uint32_t reg = 0;
+    unsigned int busy = 0;
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        auto status = ReadRegister(H2M_MAILBOX_CSR, &reg);
+        CHECK_READ(H2M_MAILBOX_CSR, status);
+        if (!get_bits(H2M_MAILBOX_CSR_OWNER_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg)) break;
+        mxsleep(kRegisterBusyWait);
+    }
+    if (busy == kMaxBusyReads) {
+        std::printf("rt5370 timed out waiting for MCU ready\n");
+        return ERR_TIMED_OUT;
+    }
+    reg = set_bits(H2M_MAILBOX_CSR_OWNER_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, 1);
+    reg = set_bits(H2M_MAILBOX_CSR_CMD_TOKEN_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, token);
+    reg = set_bits(H2M_MAILBOX_CSR_ARG0_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, arg0);
+    reg = set_bits(H2M_MAILBOX_CSR_ARG1_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, arg1);
+    auto status = WriteRegister(H2M_MAILBOX_CSR, reg);
+    CHECK_WRITE(H2M_MAILBOX_CSR, status);
+
+    status = WriteRegister(HOST_CMD, command);
+    CHECK_WRITE(HOST_CMD, status);
+    mxsleep(1ms);
+
+    return status;
+}
+
+mx_status_t Device::DisableWpdma() {
+    uint32_t reg = 0;
+    auto status = ReadRegister(WPDMA_GLO_CFG, &reg);
+    CHECK_READ(WPDMA_GLO_CFG, status);
+    reg = clear_bit(WPDMA_GLO_CFG_TX_DMA_EN, reg);
+    reg = clear_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg);
+    reg = clear_bit(WPDMA_GLO_CFG_RX_DMA_EN, reg);
+    reg = clear_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg);
+    reg = set_bit(WPDMA_GLO_CFG_TX_WB_DDONE, reg);
+    status = WriteRegister(WPDMA_GLO_CFG, reg);
+    CHECK_WRITE(WPDMA_GLO_CFG, status);
+    std::printf("rt5370 disabled WPDMA\n");
+    return NO_ERROR;
+}
+
+mx_status_t Device::DetectAutoRun(bool* autorun) {
+    uint32_t fw_mode = 0;
+    mx_status_t status = usb_control(usb_device_, (USB_DIR_IN | USB_TYPE_VENDOR),
+                                     kDeviceMode, kAutorun, 0, &fw_mode, sizeof(fw_mode));
+    if (status < 0) {
+        std::printf("rt5370 DeviceMode error: %d\n", status);
+        return status;
+    }
+
+    fw_mode = letoh32(fw_mode);
+    if ((fw_mode & 0x03) == 2) {
+        std::printf("rt5370 AUTORUN\n");
+        *autorun = true;
+    } else {
+        *autorun = false;
+    }
+    return NO_ERROR;
+}
+
+void Device::HandleRxComplete(iotxn_t* request) {
+    std::printf("rt5370::Device::HandleRxComplete\n");
+    if (request->status == ERR_REMOTE_CLOSED) {
+        request->ops->release(request);
+        return;
+    }
+
+    std::lock_guard<std::mutex> guard(lock_);
+
+    if (request->status == NO_ERROR) {
+        // Handle completed rx
+        std::printf("rt5370 rx complete\n");
+        completed_reads_.push_back(request);
+    } else {
+        std::printf("rt5370 rx txn status %d\n", request->status);
+        iotxn_queue(usb_device_, request);
+    }
+    UpdateSignals_Locked();
+}
+
+void Device::HandleTxComplete(iotxn_t* request) {
+    std::printf("rt5370::Device::HandleTxComplete\n");
+    if (request->status == ERR_REMOTE_CLOSED) {
+        request->ops->release(request);
+        return;
+    }
+
+    std::lock_guard<std::mutex> guard(lock_);
+
+    free_write_reqs_.push_back(request);
+    UpdateSignals_Locked();
+}
+
+void Device::UpdateSignals_Locked() {
+    mx_signals_t new_signals = 0;
+
+    if (dead_) {
+        new_signals |= (DEV_STATE_READABLE | DEV_STATE_ERROR);
+    }
+    if (!completed_reads_.empty()) {
+        new_signals |= DEV_STATE_READABLE;
+    }
+    if (!free_write_reqs_.empty()) {
+        new_signals |= DEV_STATE_WRITABLE;
+    }
+    if (new_signals != signals_) {
+        device_state_set_clr(&device_, new_signals & ~signals_, signals_ & ~new_signals);
+        signals_ = new_signals;
+    }
+}
+
 void Device::Unbind() {
     std::printf("rt5370::Device::Unbind\n");
     device_remove(&device_);
@@ -282,7 +570,28 @@ ssize_t Device::Read(void* buf, size_t count) {
 
 ssize_t Device::Write(const void* buf, size_t count) {
     std::printf("rt5370::Device::Write %p %zu\n", buf, count);
-    return 0;
+
+    std::lock_guard<std::mutex> guard(lock_);
+
+    if (free_write_reqs_.empty()) {
+        UpdateSignals_Locked();
+        return ERR_BUFFER_TOO_SMALL;
+    }
+
+    auto txn = free_write_reqs_.back();
+    free_write_reqs_.pop_back();
+    if (count > kWriteBufSize) {
+        UpdateSignals_Locked();
+        return ERR_INVALID_ARGS;
+    }
+
+    // Add TX header
+    txn->ops->copyto(txn, buf, count, 0);
+    txn->length = count;
+    iotxn_queue(usb_device_, txn);
+
+    UpdateSignals_Locked();
+    return count;
 }
 
 ssize_t Device::Ioctl(IoctlOp op, const void* in_buf, size_t in_len,
@@ -324,6 +633,16 @@ ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
                  size_t in_len, void* out_buf, size_t out_len) {
     auto dev = static_cast<Device*>(device->ctx);
     return dev->Ioctl(static_cast<IoctlOp>(op), in_buf, in_len, out_buf, out_len);
+}
+
+void Device::ReadIotxnComplete(iotxn_t* request, void* cookie) {
+    auto dev = static_cast<Device*>(cookie);
+    auto f = std::async(std::launch::async, &rt5370::Device::HandleRxComplete, dev, request);
+}
+
+void Device::WriteIotxnComplete(iotxn_t* request, void* cookie) {
+    auto dev = static_cast<Device*>(cookie);
+    auto f = std::async(std::launch::async, &rt5370::Device::HandleTxComplete, dev, request);
 }
 
 }  // namespace rt5370

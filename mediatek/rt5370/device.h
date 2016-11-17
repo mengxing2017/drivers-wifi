@@ -6,10 +6,12 @@
 
 #include <ddk/device.h>
 #include <ddk/driver.h>
+#include <ddk/iotxn.h>
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace rt5370 {
@@ -34,6 +36,17 @@ class Device {
 
     mx_status_t ReadEeprom();
     mx_status_t ValidateEeprom();
+    mx_status_t LoadFirmware();
+
+    mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
+
+    mx_status_t DetectAutoRun(bool* autorun);
+    mx_status_t DisableWpdma();
+
+    void HandleRxComplete(iotxn_t* request);
+    void HandleTxComplete(iotxn_t* request);
+
+    void UpdateSignals_Locked();
 
     // DDK API
     void Unbind();
@@ -50,6 +63,9 @@ class Device {
     static ssize_t DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
                             size_t in_len, void* out_buf, size_t out_len);
 
+    static void ReadIotxnComplete(iotxn_t* request, void* cookie);
+    static void WriteIotxnComplete(iotxn_t* request, void* cookie);
+
     mx_driver_t* driver_;
     mx_device_t* usb_device_;
     mx_device_t device_;
@@ -64,6 +80,13 @@ class Device {
     uint16_t rt_type_ = 0;
     uint16_t rt_rev_ = 0;
     uint16_t rf_type_ = 0;
+
+    bool dead_ = false;
+
+    std::mutex lock_;
+    mx_signals_t signals_ = 0;
+    std::vector<iotxn_t*> completed_reads_;
+    std::vector<iotxn_t*> free_write_reqs_;
 };
 
 }  // namespace rt5370
