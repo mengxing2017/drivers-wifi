@@ -50,16 +50,11 @@ extern "C" mx_status_t mediatek_rt5370_bind(mx_driver_t* driver, mx_device_t* de
 
     std::printf("%s: found device!\n", __func__);
     auto rtdev = new rt5370::Device(driver, device, blkin_endpt, std::move(blkout_endpts));
-    auto f = std::async(std::launch::async, &rt5370::Device::Bind, rtdev);
-    auto future_status = f.wait_for(std::chrono::seconds(0));
-    if (future_status == std::future_status::deferred) {
-        // Task was deferred, so just wait for the result and report any errors.
-        if (f.get() != NO_ERROR) {
-            std::printf("%s: failed to bind rt5370 device\n", __func__);
-            delete rtdev;
-            return ERR_NOT_SUPPORTED;
-        }
-    }
-
+    auto f = std::async(std::launch::async, [rtdev]() {
+                auto status = rtdev->Bind();
+                if (status != NO_ERROR) {
+                    delete rtdev;
+                }
+            });
     return NO_ERROR;
 }

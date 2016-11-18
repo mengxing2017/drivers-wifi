@@ -68,6 +68,7 @@ constexpr uint32_t clear_bit(uint8_t offset, uint32_t orig) {
     return set_bits(offset, 1, orig, 0);
 }
 
+// The <cstdlib> overloads confuse the compiler for <cstdint> types.
 template <typename T>
 constexpr T abs(T t) {
     return t < 0 ? -t : t;
@@ -86,7 +87,15 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
     std::printf("rt5370::Device drv=%p dev=%p bulk_in=%u\n", driver_, usb_device_, rx_endpt_);
 }
 
-Device::~Device() {}
+Device::~Device() {
+    std::printf("rt5370::Device::~Device\n");
+    for (auto txn : free_write_reqs_) {
+        txn->ops->release(txn);
+    }
+    for (auto txn : completed_reads_) {
+        txn->ops->release(txn);
+    }
+}
 
 mx_status_t Device::Bind() {
     std::printf("rt5370::Device::Bind\n");
@@ -179,7 +188,20 @@ mx_status_t Device::Bind() {
         free_write_reqs_.push_back(req);
     }
 
-    return NO_ERROR;
+    device_ops_.unbind = &Device::DdkUnbind;
+    device_ops_.release = &Device::DdkRelease;
+    device_ops_.read = &Device::DdkRead;
+    device_ops_.write = &Device::DdkWrite;
+    device_ops_.ioctl = &Device::DdkIoctl;
+    device_init(&device_, driver_, "rt5370", &device_ops_);
+
+    device_.ctx = this;
+    status = device_add(&device_, usb_device_);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not add device err=%d\n", status);
+    }
+
+    return status;
 }
 
 mx_status_t Device::ReadRegister(uint16_t offset, uint32_t* value) {
@@ -554,6 +576,11 @@ void Device::UpdateSignals_Locked() {
 
 void Device::Unbind() {
     std::printf("rt5370::Device::Unbind\n");
+    {
+        std::lock_guard<std::mutex> guard(lock_);
+        dead_ = true;
+        UpdateSignals_Locked();
+    }
     device_remove(&device_);
 }
 
@@ -565,11 +592,20 @@ mx_status_t Device::Release() {
 
 ssize_t Device::Read(void* buf, size_t count) {
     std::printf("rt5370::Device::Read %p %zu\n", buf, count);
+
+    if (dead_) {
+        return ERR_REMOTE_CLOSED;
+    }
+
     return 0;
 }
 
 ssize_t Device::Write(const void* buf, size_t count) {
     std::printf("rt5370::Device::Write %p %zu\n", buf, count);
+
+    if (dead_) {
+        return ERR_REMOTE_CLOSED;
+    }
 
     std::lock_guard<std::mutex> guard(lock_);
 
@@ -619,12 +655,12 @@ mx_status_t Device::DdkRelease(mx_device_t* device) {
     return dev->Release();
 }
 
-ssize_t Device::DdkRead(mx_device_t* device, void* buf, size_t count) {
+ssize_t Device::DdkRead(mx_device_t* device, void* buf, size_t count, mx_off_t off) {
     auto dev = static_cast<Device*>(device->ctx);
     return dev->Read(buf, count);
 }
 
-ssize_t Device::DdkWrite(mx_device_t* device, const void* buf, size_t count) {
+ssize_t Device::DdkWrite(mx_device_t* device, const void* buf, size_t count, mx_off_t off) {
     auto dev = static_cast<Device*>(device->ctx);
     return dev->Write(buf, count);
 }

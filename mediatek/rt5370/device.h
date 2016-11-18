@@ -58,8 +58,8 @@ class Device {
 
     static void DdkUnbind(mx_device_t* device);
     static mx_status_t DdkRelease(mx_device_t* device);
-    static ssize_t DdkRead(mx_device_t* device, void* buf, size_t count);
-    static ssize_t DdkWrite(mx_device_t* device, const void* buf, size_t count);
+    static ssize_t DdkRead(mx_device_t* device, void* buf, size_t count, mx_off_t off);
+    static ssize_t DdkWrite(mx_device_t* device, const void* buf, size_t count, mx_off_t off);
     static ssize_t DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
                             size_t in_len, void* out_buf, size_t out_len);
 
@@ -69,6 +69,7 @@ class Device {
     mx_driver_t* driver_;
     mx_device_t* usb_device_;
     mx_device_t device_;
+    mx_protocol_device_t device_ops_;
 
     uint8_t rx_endpt_ = 0;
     //uint8_t beacon_endpt_ = 0;
