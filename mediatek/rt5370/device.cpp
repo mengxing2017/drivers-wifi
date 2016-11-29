@@ -188,6 +188,12 @@ mx_status_t Device::Bind() {
         free_write_reqs_.push_back(req);
     }
 
+    status = EnableRadio();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not enable radio\n");
+        return status;
+    }
+
     device_ops_.unbind = &Device::DdkUnbind;
     device_ops_.release = &Device::DdkRelease;
     device_ops_.read = &Device::DdkRead;
@@ -363,16 +369,10 @@ mx_status_t Device::LoadFirmware() {
     std::printf("rt5370 auto wakeup written\n");
 
     // Wait for hardware to stabilize
-    unsigned int busy = 0;
-    uint32_t reg = 0;
-    for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(MAC_CSR0, &reg);
-        if (reg && reg != ~0u) break;
-        mxsleep(1ms);
-    }
-    if (busy == kMaxBusyReads) {
+    status = WaitForMacCsr();
+    if (status != NO_ERROR) {
         std::printf("rt5370 unstable hardware\n");
-        return ERR_BAD_STATE;
+        return status;
     }
     std::printf("rt5370 hardware stabilized\n");
 
@@ -430,6 +430,8 @@ mx_status_t Device::LoadFirmware() {
     }
     mxsleep(10ms);
 
+    unsigned int busy = 0;
+    uint32_t reg = 0;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
         status = ReadRegister(SYS_CTRL, &reg);
         CHECK_READ(SYS_CTRL, status);
@@ -458,6 +460,113 @@ mx_status_t Device::LoadFirmware() {
         return status;
     }
     mxsleep(1ms);
+
+    return NO_ERROR;
+}
+
+mx_status_t Device::EnableRadio() {
+    std::printf("rt5370 %s\n", __func__);
+
+    // Wakeup the MCU
+    auto status = McuCommand(MCU_WAKEUP, 0xff, 0, 2);
+    if (status < 0) {
+        std::printf("rt5370 error waking MCU err=%d\n", status);
+        return status;
+    }
+    mxsleep(1ms);
+
+    // Wait for WPDMA to be ready
+    unsigned int busy = 0;
+    uint32_t reg = 0;
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        status = ReadRegister(WPDMA_GLO_CFG, &reg);
+        if (!get_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg) &&
+            !get_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg)) {
+            break;
+        }
+        mxsleep(10ms);
+    }
+    if (busy == kMaxBusyReads) {
+        std::printf("rt5370 WPDMA busy\n");
+        return ERR_TIMED_OUT;
+    }
+
+    // Set up USB DMA
+    status = ReadRegister(USB_DMA_CFG, &reg);
+    CHECK_READ(USB_DMA_CFG, status);
+    reg = clear_bit(USB_DMA_CFG_PHY_WD_EN, reg);
+    reg = clear_bit(USB_DMA_CFG_RX_AGG_EN, reg);
+    reg = set_bits(USB_DMA_CFG_RX_AGG_TO_OFFSET, USB_DMA_CFG_RX_AGG_TO_WIDTH, reg, 128);
+    // There appears to be a bug in the Linux driver, where an overflow is
+    // setting the rx aggregation limit too low. For now, I'm using the
+    // (incorrect) low value that Linux uses, but we should look into increasing
+    // this.
+    reg = set_bits(USB_DMA_CFG_RX_AGG_LIMIT_OFFSET, USB_DMA_CFG_RX_AGG_LIMIT_WIDTH, reg, 45);
+    reg = set_bit(USB_DMA_CFG_UDMA_RX_EN, reg);
+    reg = set_bit(USB_DMA_CFG_UDMA_TX_EN, reg);
+    status = WriteRegister(USB_DMA_CFG, reg);
+    CHECK_WRITE(USB_DMA_CFG, status);
+
+    // Wait for WPDMA again
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        status = ReadRegister(WPDMA_GLO_CFG, &reg);
+        if (!get_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg) &&
+            !get_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg)) {
+            break;
+        }
+        mxsleep(10ms);
+    }
+    if (busy == kMaxBusyReads) {
+        std::printf("rt5370 WPDMA busy\n");
+        return ERR_TIMED_OUT;
+    }
+
+    status = InitRegisters();
+    if (status < 0) {
+        std::printf("rt5370 failed to initialize registers\n");
+        return status;
+    }
+
+    return NO_ERROR;
+}
+
+mx_status_t Device::InitRegisters() {
+    std::printf("rt5370 %s\n", __func__);
+
+    auto status = DisableWpdma();
+    if (status != NO_ERROR) return status;
+
+    status = WaitForMacCsr();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 hardware unstable\n");
+        return status;
+    }
+
+    uint32_t reg = 0;
+    status = ReadRegister(SYS_CTRL, &reg);
+    CHECK_READ(SYS_CTRL, status);
+    reg = clear_bit(SYS_CTRL_PME_OEN, reg);
+    status = WriteRegister(SYS_CTRL, reg);
+    CHECK_WRITE(SYS_CTRL, status);
+
+    reg = 0;
+    reg = set_bit(MAC_SYS_CTRL_MAC_SRST, reg);
+    reg = set_bit(MAC_SYS_CTRL_BBP_HRST, reg);
+    status = WriteRegister(MAC_SYS_CTRL, reg);
+    CHECK_WRITE(MAC_SYS_CTRL, status);
+
+    status = WriteRegister(USB_DMA_CFG, 0);
+    CHECK_WRITE(USB_DMA_CFG, status);
+
+    status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kDeviceMode,
+            kReset, 0, NULL, 0);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 failed reset\n");
+        return status;
+    }
+ 
+    status = WriteRegister(MAC_SYS_CTRL, 0);
+    CHECK_WRITE(MAC_SYS_CTRL, status);
 
     return NO_ERROR;
 }
@@ -520,6 +629,22 @@ mx_status_t Device::DetectAutoRun(bool* autorun) {
     } else {
         *autorun = false;
     }
+    return NO_ERROR;
+}
+
+mx_status_t Device::WaitForMacCsr() {
+    unsigned int busy = 0;
+    uint32_t reg = 0;
+    for (busy = 0; busy < kMaxBusyReads; busy++) {
+        auto status = ReadRegister(MAC_CSR0, &reg);
+        CHECK_READ(MAC_CSR0, status);
+        if (reg && reg != ~0u) break;
+        mxsleep(1ms);
+    }
+    if (busy == kMaxBusyReads) {
+        return ERR_TIMED_OUT;
+    }
+
     return NO_ERROR;
 }
 

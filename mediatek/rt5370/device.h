@@ -37,11 +37,14 @@ class Device {
     mx_status_t ReadEeprom();
     mx_status_t ValidateEeprom();
     mx_status_t LoadFirmware();
+    mx_status_t EnableRadio();
+    mx_status_t InitRegisters();
 
     mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
 
     mx_status_t DetectAutoRun(bool* autorun);
     mx_status_t DisableWpdma();
+    mx_status_t WaitForMacCsr();
 
     void HandleRxComplete(iotxn_t* request);
     void HandleTxComplete(iotxn_t* request);

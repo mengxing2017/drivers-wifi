@@ -39,8 +39,25 @@ constexpr int WPDMA_GLO_CFG_RX_DMA_EN = 2;
 constexpr int WPDMA_GLO_CFG_RX_DMA_BUSY = 3;
 constexpr int WPDMA_GLO_CFG_TX_WB_DDONE = 6;
 
+constexpr uint16_t USB_DMA_CFG = 0x02a0;
+constexpr int USB_DMA_CFG_RX_AGG_TO_OFFSET = 0;
+constexpr int USB_DMA_CFG_RX_AGG_TO_WIDTH = 8;
+constexpr int USB_DMA_CFG_RX_AGG_LIMIT_OFFSET = 8;
+constexpr int USB_DMA_CFG_RX_AGG_LIMIT_WIDTH = 8;
+constexpr int USB_DMA_CFG_PHY_WD_EN = 16;
+constexpr int USB_DMA_CFG_TX_CLEAR = 19;
+constexpr int USB_DMA_CFG_TXOP_HALT = 20;
+constexpr int USB_DMA_CFG_RX_AGG_EN = 21;
+constexpr int USB_DMA_CFG_UDMA_RX_EN = 22;
+constexpr int USB_DMA_CFG_UDMA_TX_EN = 23;
+constexpr int USB_DMA_CFG_EPOUT_VLD_OFFSET = 24;
+constexpr int USB_DMA_CFG_EPOUT_VLD_WIDTH = 5;
+constexpr int USB_DMA_CFG_RX_BUSY = 30;
+constexpr int USB_DMA_CFG_TX_BUSY = 31;
+
 constexpr uint16_t SYS_CTRL = 0x0400;
 constexpr int SYS_CTRL_MCU_READY = 7;
+constexpr int SYS_CTRL_PME_OEN = 13;
 
 constexpr uint16_t HOST_CMD = 0x0404;
 
@@ -56,6 +73,12 @@ constexpr uint16_t EFUSE_DATA2 = 0x0598;
 constexpr uint16_t EFUSE_DATA3 = 0x059c;
 
 constexpr uint16_t MAC_CSR0 = 0x1000;
+
+constexpr uint16_t MAC_SYS_CTRL = 0x1004;
+constexpr int MAC_SYS_CTRL_MAC_SRST = 0;
+constexpr int MAC_SYS_CTRL_BBP_HRST = 1;
+constexpr int MAC_SYS_CTRL_MAC_TX_EN = 2;
+constexpr int MAC_SYS_CTRL_MAC_RX_EN = 3;
 
 constexpr uint16_t AUTO_WAKEUP_CFG = 0x1208;
 
@@ -110,5 +133,6 @@ constexpr uint16_t H2M_BBP_AGENT = 0x7028;
 
 // MCU commands
 constexpr uint8_t MCU_BOOT_SIGNAL = 0x72;
+constexpr uint8_t MCU_WAKEUP = 0x31;
 
 }  // namespace rt5370
