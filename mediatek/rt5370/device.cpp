@@ -568,6 +568,124 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(MAC_SYS_CTRL, 0);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
+    reg = LEGACY_BASIC_RATE_1MBPS | LEGACY_BASIC_RATE_2MBPS | LEGACY_BASIC_RATE_5_5MBPS |
+        LEGACY_BASIC_RATE_11MBPS | LEGACY_BASIC_RATE_6MBPS | LEGACY_BASIC_RATE_9MBPS |
+        LEGACY_BASIC_RATE_24MBPS;
+    status = WriteRegister(LEGACY_BASIC_RATE, reg);
+    CHECK_WRITE(LEGACY_BASIC_RATE, status);
+
+    // Magic number from Linux kernel driver
+    reg = 0x8003;
+    status = WriteRegister(HT_BASIC_RATE, reg);
+    CHECK_WRITE(HT_BASIC_RATE, status);
+
+    status = WriteRegister(MAC_SYS_CTRL, 0);
+    CHECK_WRITE(MAC_SYS_CTRL, status);
+
+    status = ReadRegister(BCN_TIME_CFG, &reg);
+    CHECK_READ(BCN_TIME_CFG, status);
+    reg = set_bits(BCN_TIME_CFG_BCN_INTVAL_OFFSET, BCN_TIME_CFG_BCN_INTVAL_WIDTH, reg, 1600);
+    reg = clear_bit(BCN_TIME_CFG_TSF_TIMER_EN, reg);
+    reg = set_bits(BCN_TIME_CFG_TSF_SYNC_MODE_OFFSET, BCN_TIME_CFG_TSF_SYNC_MODE_WIDTH, reg, 0);
+    reg = clear_bit(BCN_TIME_CFG_TBTT_TIMER_EN, reg);
+    reg = clear_bit(BCN_TIME_CFG_BCN_TX_EN, reg);
+    reg = set_bits(BCN_TIME_CFG_TSF_INS_COMP_OFFSET, BCN_TIME_CFG_TSF_INS_COMP_WIDTH, reg, 0);
+    status = WriteRegister(BCN_TIME_CFG, reg);
+    CHECK_WRITE(BCN_TIME_CFG, status);
+
+    status = ReadRegister(RX_FILTR_CFG, &reg);
+    CHECK_READ(RX_FILTR_CFG, status);
+    // Top 15 bits are reserved, so preserve them.
+    reg = (reg & 0xfffe0000) |
+        RX_FILTR_CFG_DROP_CRC_ERR |
+        RX_FILTR_CFG_DROP_PHY_ERR |
+        RX_FILTR_CFG_DROP_UC_NOME |
+        RX_FILTR_CFG_DROP_VER_ERR |
+        RX_FILTR_CFG_DROP_DUPL |
+        RX_FILTR_CFG_DROP_CFACK |
+        RX_FILTR_CFG_DROP_CFEND |
+        RX_FILTR_CFG_DROP_ACK |
+        RX_FILTR_CFG_DROP_CTS |
+        RX_FILTR_CFG_DROP_RTS |
+        RX_FILTR_CFG_DROP_PSPOLL |
+        RX_FILTR_CFG_DROP_BAR |
+        RX_FILTR_CFG_DROP_CTRL_RSV;
+    status = WriteRegister(RX_FILTR_CFG, reg);
+    CHECK_WRITE(RX_FILTR_CFG, status);
+
+    status = ReadRegister(BKOFF_SLOT_CFG, &reg);
+    CHECK_READ(BKOFF_SLOT_CFG, status);
+    reg = set_bits(BKOFF_SLOT_CFG_SLOT_TIME_OFFSET, BKOFF_SLOT_CFG_SLOT_TIME_WIDTH, reg, 9);
+    reg = set_bits(BKOFF_SLOT_CFG_CC_DELAY_TIME_OFFSET, BKOFF_SLOT_CFG_CC_DELAY_TIME_WIDTH, reg, 2);
+    status = WriteRegister(BKOFF_SLOT_CFG, reg);
+    CHECK_WRITE(BKOFF_SLOT_CFG, status);
+
+    // TX_SW_CFG register values come from Linux kernel driver
+    reg = set_bits(TX_SW_CFG0_DLY_TXPE_EN, TX_SW_CFG_WIDTH, 0, 0x04);
+    reg = set_bits(TX_SW_CFG0_DLY_PAPE_EN, TX_SW_CFG_WIDTH, reg, 0x04);
+    // All other TX_SW_CFG0 values are 0 (set by using 0 as starting value)
+    status = WriteRegister(TX_SW_CFG0, reg);
+    CHECK_WRITE(TX_SW_CFG0, status);
+
+    reg = set_bits(TX_SW_CFG1_DLY_PAPE_DIS, TX_SW_CFG_WIDTH, 0, 0x06);
+    reg = set_bits(TX_SW_CFG1_DLY_TRSW_DIS, TX_SW_CFG_WIDTH, reg, 0x06);
+    reg = set_bits(TX_SW_CFG1_DLY_RFTR_DIS, TX_SW_CFG_WIDTH, reg, 0x08);
+    status = WriteRegister(TX_SW_CFG1, reg);
+    CHECK_WRITE(TX_SW_CFG1, status);
+
+    status = WriteRegister(TX_SW_CFG2, 0);
+    CHECK_WRITE(TX_SW_CFG2, status);
+
+    status = ReadRegister(TX_LINK_CFG, &reg);
+    CHECK_READ(TX_LINK_CFG, status);
+    reg = set_bits(TX_LINK_CFG_REMOTE_MFB_LIFETIME_OFFSET, TX_LINK_CFG_REMOTE_MFB_LIFETIME_WIDTH, reg, 32);
+    reg = clear_bit(TX_LINK_CFG_TX_MFB_EN, reg);
+    reg = clear_bit(TX_LINK_CFG_REMOTE_UMFS_EN, reg);
+    reg = clear_bit(TX_LINK_CFG_TX_MRQ_EN, reg);
+    reg = clear_bit(TX_LINK_CFG_TX_RDG_EN, reg);
+    reg = set_bit(TX_LINK_CFG_TX_CFACK_EN, reg);
+    reg = set_bits(TX_LINK_CFG_REMOTE_MFB_OFFSET, TX_LINK_CFG_REMOTE_MFB_WIDTH, reg, 0);
+    reg = set_bits(TX_LINK_CFG_REMOTE_MFS_OFFSET, TX_LINK_CFG_REMOTE_MFS_WIDTH, reg, 0);
+    status = WriteRegister(TX_LINK_CFG, reg);
+    CHECK_WRITE(TX_LINK_CFG, status);
+
+    status = ReadRegister(TX_TIMEOUT_CFG, &reg);
+    CHECK_READ(TX_TIMEOUT_CFG, status);
+    reg = set_bits(TX_TIMEOUT_CFG_MPDU_LIFE_TIME_OFFSET, TX_TIMEOUT_CFG_MPDU_LIFE_TIME_WIDTH, reg, 9);
+    reg = set_bits(TX_TIMEOUT_CFG_RX_ACK_TIMEOUT_OFFSET, TX_TIMEOUT_CFG_RX_ACK_TIMEOUT_WIDTH, reg, 32);
+    reg = set_bits(TX_TIMEOUT_CFG_TXOP_TIMEOUT_OFFSET, TX_TIMEOUT_CFG_TXOP_TIMEOUT_WIDTH, reg, 10);
+    status = WriteRegister(TX_TIMEOUT_CFG, reg);
+    CHECK_WRITE(TX_TIMEOUT_CFG, status);
+
+    status = ReadRegister(MAX_LEN_CFG, &reg);
+    CHECK_READ(MAX_LEN_CFG, status);
+    reg = set_bits(MAX_LEN_CFG_MAX_MPDU_LEN_OFFSET, MAX_LEN_CFG_MAX_MPDU_LEN_WIDTH, reg, 3840);
+    reg = set_bits(MAX_LEN_CFG_MAX_PSDU_LEN_OFFSET, MAX_LEN_CFG_MAX_PSDU_LEN_WIDTH, reg, 1);
+    reg = set_bits(MAX_LEN_CFG_MIN_PSDU_LEN_OFFSET, MAX_LEN_CFG_MIN_PSDU_LEN_WIDTH, reg, 0);
+    reg = set_bits(MAX_LEN_CFG_MIN_MPDU_LEN_OFFSET, MAX_LEN_CFG_MIN_MPDU_LEN_WIDTH, reg, 0);
+    status = WriteRegister(MAX_LEN_CFG, reg);
+    CHECK_WRITE(MAX_LEN_CFG, status);
+
+    // TODO: LED_CFG
+
+    reg = set_bits(MAX_PCNT_MAX_RX0Q_PCNT_OFFSET, MAX_PCNT_WIDTH, 0, 0x9f);
+    reg = set_bits(MAX_PCNT_MAX_TX2Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0xbf);
+    reg = set_bits(MAX_PCNT_MAX_TX1Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0x3f);
+    reg = set_bits(MAX_PCNT_MAX_TX0Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0x1f);
+    status = WriteRegister(MAX_PCNT, reg);
+    CHECK_WRITE(MAX_PCNT, status);
+
+    status = ReadRegister(TX_RTY_CFG, &reg);
+    CHECK_READ(TX_RTY_CFG, status);
+    reg = set_bits(TX_RTY_CFG_SHORT_RTY_LIMIT_OFFSET, TX_RTY_CFG_SHORT_RTY_LIMIT_WIDTH, reg, 15);
+    reg = set_bits(TX_RTY_CFG_LONG_RTY_LIMIT_OFFSET, TX_RTY_CFG_LONG_RTY_LIMIT_WIDTH, reg, 31);
+    reg = set_bits(TX_RTY_CFG_LONG_RTY_THRES_OFFSET, TX_RTY_CFG_LONG_RTY_THRES_WIDTH, reg, 2000);
+    reg = clear_bit(TX_RTY_CFG_NAG_RTY_MODE, reg);
+    reg = clear_bit(TX_RTY_CFG_AGG_RTY_MODE, reg);
+    reg = set_bit(TX_RTY_CFG_TX_AUTOFB_EN, reg);
+    status = WriteRegister(TX_RTY_CFG, reg);
+    CHECK_WRITE(TX_RTY_CFG, status);
+
     return NO_ERROR;
 }
 
