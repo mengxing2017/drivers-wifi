@@ -16,6 +16,8 @@
 
 namespace rt5370 {
 
+template <uint16_t A> class Register;
+
 class Device {
   public:
     Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
@@ -32,7 +34,9 @@ class Device {
     };
 
     mx_status_t ReadRegister(uint16_t offset, uint32_t* value);
+    template <uint16_t A> mx_status_t ReadRegister(Register<A>* reg);
     mx_status_t WriteRegister(uint16_t offset, uint32_t value);
+    template <uint16_t A> mx_status_t WriteRegister(const Register<A>& reg);
 
     mx_status_t ReadEeprom();
     mx_status_t ValidateEeprom();

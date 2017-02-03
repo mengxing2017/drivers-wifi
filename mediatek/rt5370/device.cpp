@@ -60,13 +60,13 @@ constexpr uint32_t set_bits(uint8_t offset, uint8_t len, uint32_t orig, uint32_t
     return ret | ((value << offset) & mask);
 }
 
-constexpr uint32_t set_bit(uint8_t offset, uint32_t orig) {
-    return set_bits(offset, 1, orig, 1);
-}
-
-constexpr uint32_t clear_bit(uint8_t offset, uint32_t orig) {
-    return set_bits(offset, 1, orig, 0);
-}
+//constexpr uint32_t set_bit(uint8_t offset, uint32_t orig) {
+//    return set_bits(offset, 1, orig, 1);
+//}
+//
+//constexpr uint32_t clear_bit(uint8_t offset, uint32_t orig) {
+//    return set_bits(offset, 1, orig, 0);
+//}
 
 // The <cstdlib> overloads confuse the compiler for <cstdint> types.
 template <typename T>
@@ -100,12 +100,12 @@ Device::~Device() {
 mx_status_t Device::Bind() {
     std::printf("rt5370::Device::Bind\n");
 
-    uint32_t mac_csr = 0;
-    auto status = ReadRegister(MAC_CSR0, &mac_csr);
-    CHECK_READ(status, MAC_CSR0);
+    AsicVerId avi;
+    auto status = ReadRegister(&avi);
+    CHECK_READ(MAC_CSR0, status);
 
-    rt_type_ = (mac_csr >> 16) & 0xffff;
-    rt_rev_ = mac_csr & 0xffff;
+    rt_type_ = avi.ver_id();
+    rt_rev_ = avi.rev_id();
     std::printf("rt5370 RT chipset %#x, rev %#x\n", rt_type_, rt_rev_);
 
     bool autorun = false;
@@ -114,12 +114,12 @@ mx_status_t Device::Bind() {
         return status;
     }
 
-    uint32_t efuse_ctrl = 0;
-    status = ReadRegister(EFUSE_CTRL, &efuse_ctrl);
+    EfuseCtrl ec;
+    status = ReadRegister(&ec);
     CHECK_READ(EFUSE_CTRL, status);
 
-    std::printf("rt5370 efuse ctrl reg: %#x\n", efuse_ctrl);
-    bool efuse_present = (efuse_ctrl & 0x80000000) > 0;
+    std::printf("rt5370 efuse ctrl reg: %#x\n", ec.val());
+    bool efuse_present = ec.sel_efuse() > 0;
     std::printf("rt5370 efuse present: %s\n", efuse_present ? "Y" : "N");
 
     status = ReadEeprom();
@@ -215,32 +215,40 @@ mx_status_t Device::ReadRegister(uint16_t offset, uint32_t* value) {
             offset, value, sizeof(*value));
 }
 
+template <uint16_t A> mx_status_t Device::ReadRegister(Register<A>* reg) {
+    return ReadRegister(A, reg->mut_val());
+}
+
 mx_status_t Device::WriteRegister(uint16_t offset, uint32_t value) {
     return usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kMultiWrite, 0,
             offset, &value, sizeof(value));
 }
 
+template <uint16_t A> mx_status_t Device::WriteRegister(const Register<A>& reg) {
+    return WriteRegister(A, reg.val());
+}
+
 mx_status_t Device::ReadEeprom() {
     // Read 4 entries at a time
     for (unsigned int i = 0; i < eeprom_.size(); i += 8) {
-        uint32_t reg = 0;
-        auto status = ReadRegister(EFUSE_CTRL, &reg);
+        EfuseCtrl ec;
+        auto status = ReadRegister(&ec);
         CHECK_READ(EFUSE_CTRL, status);
 
         // Set the address and tell it to load the next four words. Addresses
         // must be 16-byte aligned.
-        reg = set_bits(EFUSE_CTRL_ADDR, EFUSE_CTRL_ADDR_WIDTH, reg, (i << 1));
-        reg = clear_bit(EFUSE_CTRL_MODE, reg);
-        reg = set_bit(EFUSE_CTRL_KICK, reg);
-        status = WriteRegister(EFUSE_CTRL, reg);
+        ec.set_efsrom_ain(i << 1);
+        ec.set_efsrom_mode(0);
+        ec.set_efsrom_kick(1);
+        status = WriteRegister(ec);
         CHECK_WRITE(EFUSE_CTRL, status);
 
         // Wait until the registers are ready for reading.
         unsigned int busy = 0;
         for (busy = 0; busy < kMaxBusyReads; busy++) {
-            status = ReadRegister(EFUSE_CTRL, &reg);
+            status = ReadRegister(&ec);
             CHECK_READ(EFUSE_CTRL, status);
-            if (!get_bit(EFUSE_CTRL_KICK, reg)) break;
+            if (!ec.efsrom_kick()) break;
             mxsleep(kRegisterBusyWait);
         }
         if (busy == kMaxBusyReads) {
@@ -251,25 +259,29 @@ mx_status_t Device::ReadEeprom() {
         // Read the registers into the eeprom. EEPROM is read in descending
         // order, and are always return in host order but to be interpreted as
         // little endian.
-        status = ReadRegister(EFUSE_DATA3, &reg);
-        CHECK_READ(EFUSE_DATA3, status);
-        eeprom_[i] = htole32(reg) & 0xffff;
-        eeprom_[i+1] = htole32(reg) >> 16;
-
-        status = ReadRegister(EFUSE_DATA2, &reg);
-        CHECK_READ(EFUSE_DATA2, status);
-        eeprom_[i+2] = htole32(reg) & 0xffff;
-        eeprom_[i+3] = htole32(reg) >> 16;
-
-        status = ReadRegister(EFUSE_DATA1, &reg);
-        CHECK_READ(EFUSE_DATA1, status);
-        eeprom_[i+4] = htole32(reg) & 0xffff;
-        eeprom_[i+5] = htole32(reg) >> 16;
-
-        status = ReadRegister(EFUSE_DATA0, &reg);
+        RfuseData0 rd0;
+        status = ReadRegister(&rd0);
         CHECK_READ(EFUSE_DATA0, status);
-        eeprom_[i+6] = htole32(reg) & 0xffff;
-        eeprom_[i+7] = htole32(reg) >> 16;
+        eeprom_[i] = htole32(rd0.val()) & 0xffff;
+        eeprom_[i+1] = htole32(rd0.val()) >> 16;
+
+        RfuseData1 rd1;
+        status = ReadRegister(&rd1);
+        CHECK_READ(EFUSE_DATA1, status);
+        eeprom_[i+2] = htole32(rd1.val()) & 0xffff;
+        eeprom_[i+3] = htole32(rd1.val()) >> 16;
+
+        RfuseData2 rd2;
+        status = ReadRegister(&rd2);
+        CHECK_READ(EFUSE_DATA2, status);
+        eeprom_[i+4] = htole32(rd2.val()) & 0xffff;
+        eeprom_[i+5] = htole32(rd2.val()) >> 16;
+
+        RfuseData3 rd3;
+        status = ReadRegister(&rd3);
+        CHECK_READ(EFUSE_DATA3, status);
+        eeprom_[i+6] = htole32(rd3.val()) & 0xffff;
+        eeprom_[i+7] = htole32(rd3.val()) >> 16;
     }
 
 #if 0
@@ -337,7 +349,7 @@ mx_status_t Device::ValidateEeprom() {
 
 mx_status_t Device::LoadFirmware() {
     mx_handle_t fw_handle;
-    mx_size_t fw_size = 0;
+    size_t fw_size = 0;
     auto status = load_firmware(driver_, kFirmwareFile, &fw_handle, &fw_size);
     if (status != NO_ERROR) {
         std::printf("rt5370 failed to load firmware '%s': err=%d\n", kFirmwareFile, status);
@@ -347,7 +359,7 @@ mx_status_t Device::LoadFirmware() {
 
     mx::vmo fw(fw_handle);
     uint8_t fwversion[2];
-    mx_size_t actual = 0;
+    size_t actual = 0;
     status = fw.read(fwversion, fw_size - 4, 2, &actual);
     if (status != NO_ERROR || actual != sizeof(fwversion)) {
         std::printf("rt5370 error reading fw version\n");
@@ -363,8 +375,9 @@ mx_status_t Device::LoadFirmware() {
 
     // TODO: check crc, 4kB at a time
 
+    AutoWakeupCfg awc;
     std::printf("rt5370 writing auto wakeup\n");
-    status = WriteRegister(AUTO_WAKEUP_CFG, 0);
+    status = WriteRegister(awc);
     CHECK_WRITE(AUTO_WAKEUP_CFG, status);
     std::printf("rt5370 auto wakeup written\n");
 
@@ -392,8 +405,8 @@ mx_status_t Device::LoadFirmware() {
 
     // Send the firmware to the chip
     // For rt5370, start at offset 4096 and send 4096 bytes
-    mx_size_t offset = 4096;
-    mx_size_t remaining = fw_size - offset;
+    size_t offset = 4096;
+    size_t remaining = fw_size - offset;
     uint8_t buf[64];
     uint16_t addr = FW_IMAGE_BASE;
 
@@ -431,11 +444,11 @@ mx_status_t Device::LoadFirmware() {
     mxsleep(10ms);
 
     unsigned int busy = 0;
-    uint32_t reg = 0;
+    SysCtrl sc;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(SYS_CTRL, &reg);
+        status = ReadRegister(&sc);
         CHECK_READ(SYS_CTRL, status);
-        if (get_bit(SYS_CTRL_MCU_READY, reg)) break;
+        if (sc.mcu_ready()) break;
         mxsleep(1ms);
     }
     if (busy == kMaxBusyReads) {
@@ -450,7 +463,8 @@ mx_status_t Device::LoadFirmware() {
     // Initialize firmware and boot the MCU
     status = WriteRegister(H2M_BBP_AGENT, 0);
     CHECK_WRITE(H2M_BBP_AGENT, status);
-    status = WriteRegister(H2M_MAILBOX_CSR, 0);
+    H2mMailboxCsr hmc;
+    status = WriteRegister(hmc);
     CHECK_WRITE(H2M_MAILBOX_CSR, status);
     status = WriteRegister(H2M_INT_SRC, 0);
     CHECK_WRITE(H2M_INT_SRC, status);
@@ -477,11 +491,10 @@ mx_status_t Device::EnableRadio() {
 
     // Wait for WPDMA to be ready
     unsigned int busy = 0;
-    uint32_t reg = 0;
+    WpdmaGloCfg wgc;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(WPDMA_GLO_CFG, &reg);
-        if (!get_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg) &&
-            !get_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg)) {
+        status = ReadRegister(&wgc);
+        if (!wgc.tx_dma_busy() && !wgc.rx_dma_busy()) {
             break;
         }
         mxsleep(10ms);
@@ -492,26 +505,26 @@ mx_status_t Device::EnableRadio() {
     }
 
     // Set up USB DMA
-    status = ReadRegister(USB_DMA_CFG, &reg);
+    UsbDmaCfg udc;
+    status = ReadRegister(&udc);
     CHECK_READ(USB_DMA_CFG, status);
-    reg = clear_bit(USB_DMA_CFG_PHY_WD_EN, reg);
-    reg = clear_bit(USB_DMA_CFG_RX_AGG_EN, reg);
-    reg = set_bits(USB_DMA_CFG_RX_AGG_TO_OFFSET, USB_DMA_CFG_RX_AGG_TO_WIDTH, reg, 128);
+    udc.set_phy_wd_en(0);
+    udc.set_rx_agg_en(0);
+    udc.set_rx_agg_to(128);
     // There appears to be a bug in the Linux driver, where an overflow is
     // setting the rx aggregation limit too low. For now, I'm using the
     // (incorrect) low value that Linux uses, but we should look into increasing
     // this.
-    reg = set_bits(USB_DMA_CFG_RX_AGG_LIMIT_OFFSET, USB_DMA_CFG_RX_AGG_LIMIT_WIDTH, reg, 45);
-    reg = set_bit(USB_DMA_CFG_UDMA_RX_EN, reg);
-    reg = set_bit(USB_DMA_CFG_UDMA_TX_EN, reg);
-    status = WriteRegister(USB_DMA_CFG, reg);
+    udc.set_rx_agg_limit(45);
+    udc.set_udma_rx_en(1);
+    udc.set_udma_tx_en(1);
+    status = WriteRegister(udc);
     CHECK_WRITE(USB_DMA_CFG, status);
 
     // Wait for WPDMA again
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(WPDMA_GLO_CFG, &reg);
-        if (!get_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg) &&
-            !get_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg)) {
+        status = ReadRegister(&wgc);
+        if (!wgc.tx_dma_busy() && !wgc.rx_dma_busy()) {
             break;
         }
         mxsleep(10ms);
@@ -542,20 +555,21 @@ mx_status_t Device::InitRegisters() {
         return status;
     }
 
-    uint32_t reg = 0;
-    status = ReadRegister(SYS_CTRL, &reg);
+    SysCtrl sc;
+    status = ReadRegister(&sc);
     CHECK_READ(SYS_CTRL, status);
-    reg = clear_bit(SYS_CTRL_PME_OEN, reg);
-    status = WriteRegister(SYS_CTRL, reg);
+    sc.set_pme_oen(0);
+    status = WriteRegister(sc);
     CHECK_WRITE(SYS_CTRL, status);
 
-    reg = 0;
-    reg = set_bit(MAC_SYS_CTRL_MAC_SRST, reg);
-    reg = set_bit(MAC_SYS_CTRL_BBP_HRST, reg);
-    status = WriteRegister(MAC_SYS_CTRL, reg);
+    MacSysCtrl msc;
+    msc.set_mac_srst(1);
+    msc.set_bbp_hrst(1);
+    status = WriteRegister(msc);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    status = WriteRegister(USB_DMA_CFG, 0);
+    UsbDmaCfg udc;
+    status = WriteRegister(udc);
     CHECK_WRITE(USB_DMA_CFG, status);
 
     status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kDeviceMode,
@@ -565,151 +579,185 @@ mx_status_t Device::InitRegisters() {
         return status;
     }
  
-    status = WriteRegister(MAC_SYS_CTRL, 0);
+    msc.clear();
+    status = WriteRegister(msc);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    reg = LEGACY_BASIC_RATE_1MBPS | LEGACY_BASIC_RATE_2MBPS | LEGACY_BASIC_RATE_5_5MBPS |
-        LEGACY_BASIC_RATE_11MBPS | LEGACY_BASIC_RATE_6MBPS | LEGACY_BASIC_RATE_9MBPS |
-        LEGACY_BASIC_RATE_24MBPS;
-    status = WriteRegister(LEGACY_BASIC_RATE, reg);
+    LegacyBasicRate lbr;
+    lbr.set_rate_1mbps(1);
+    lbr.set_rate_2mbps(1);
+    lbr.set_rate_5_5mbps(1);
+    lbr.set_rate_11mbps(1);
+    lbr.set_rate_6mbps(1);
+    lbr.set_rate_9mbps(1);
+    lbr.set_rate_24mbps(1);
+    status = WriteRegister(lbr);
     CHECK_WRITE(LEGACY_BASIC_RATE, status);
 
     // Magic number from Linux kernel driver
-    reg = 0x8003;
-    status = WriteRegister(HT_BASIC_RATE, reg);
+    HtBasicRate hbr;
+    hbr.set_val(0x8003);
+    status = WriteRegister(hbr);
     CHECK_WRITE(HT_BASIC_RATE, status);
 
-    status = WriteRegister(MAC_SYS_CTRL, 0);
+    status = WriteRegister(msc);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    status = ReadRegister(BCN_TIME_CFG, &reg);
+    BcnTimeCfg btc;
+    status = ReadRegister(&btc);
     CHECK_READ(BCN_TIME_CFG, status);
-    reg = set_bits(BCN_TIME_CFG_BCN_INTVAL_OFFSET, BCN_TIME_CFG_BCN_INTVAL_WIDTH, reg, 1600);
-    reg = clear_bit(BCN_TIME_CFG_TSF_TIMER_EN, reg);
-    reg = set_bits(BCN_TIME_CFG_TSF_SYNC_MODE_OFFSET, BCN_TIME_CFG_TSF_SYNC_MODE_WIDTH, reg, 0);
-    reg = clear_bit(BCN_TIME_CFG_TBTT_TIMER_EN, reg);
-    reg = clear_bit(BCN_TIME_CFG_BCN_TX_EN, reg);
-    reg = set_bits(BCN_TIME_CFG_TSF_INS_COMP_OFFSET, BCN_TIME_CFG_TSF_INS_COMP_WIDTH, reg, 0);
-    status = WriteRegister(BCN_TIME_CFG, reg);
+    btc.set_bcn_intval(1600);
+    btc.set_tsf_timer_en(0);
+    btc.set_tsf_sync_mode(0);
+    btc.set_tbtt_timer_en(0);
+    btc.set_bcn_tx_en(0);
+    btc.set_tsf_ins_comp(0);
+    status = WriteRegister(btc);
     CHECK_WRITE(BCN_TIME_CFG, status);
 
-    status = ReadRegister(RX_FILTR_CFG, &reg);
+    RxFiltrCfg rfc;
+    status = ReadRegister(&rfc);
     CHECK_READ(RX_FILTR_CFG, status);
-    // Top 15 bits are reserved, so preserve them.
-    reg = (reg & 0xfffe0000) |
-        RX_FILTR_CFG_DROP_CRC_ERR |
-        RX_FILTR_CFG_DROP_PHY_ERR |
-        RX_FILTR_CFG_DROP_UC_NOME |
-        RX_FILTR_CFG_DROP_VER_ERR |
-        RX_FILTR_CFG_DROP_DUPL |
-        RX_FILTR_CFG_DROP_CFACK |
-        RX_FILTR_CFG_DROP_CFEND |
-        RX_FILTR_CFG_DROP_ACK |
-        RX_FILTR_CFG_DROP_CTS |
-        RX_FILTR_CFG_DROP_RTS |
-        RX_FILTR_CFG_DROP_PSPOLL |
-        RX_FILTR_CFG_DROP_BAR |
-        RX_FILTR_CFG_DROP_CTRL_RSV;
-    status = WriteRegister(RX_FILTR_CFG, reg);
+    rfc.set_drop_crc_err(1);
+    rfc.set_drop_phy_err(1);
+    rfc.set_drop_uc_nome(1);
+    rfc.set_drop_ver_err(1);
+    rfc.set_drop_dupl(1);
+    rfc.set_drop_cfack(1);
+    rfc.set_drop_cfend(1);
+    rfc.set_drop_ack(1);
+    rfc.set_drop_cts(1);
+    rfc.set_drop_rts(1);
+    rfc.set_drop_pspoll(1);
+    rfc.set_drop_bar(1);
+    rfc.set_drop_ctrl_rsv(1);
+    status = WriteRegister(rfc);
     CHECK_WRITE(RX_FILTR_CFG, status);
 
-    status = ReadRegister(BKOFF_SLOT_CFG, &reg);
+    BkoffSlotCfg bsc;
+    status = ReadRegister(&bsc);
     CHECK_READ(BKOFF_SLOT_CFG, status);
-    reg = set_bits(BKOFF_SLOT_CFG_SLOT_TIME_OFFSET, BKOFF_SLOT_CFG_SLOT_TIME_WIDTH, reg, 9);
-    reg = set_bits(BKOFF_SLOT_CFG_CC_DELAY_TIME_OFFSET, BKOFF_SLOT_CFG_CC_DELAY_TIME_WIDTH, reg, 2);
-    status = WriteRegister(BKOFF_SLOT_CFG, reg);
+    bsc.set_slot_time(9);
+    bsc.set_cc_delay_time(2);
+    status = WriteRegister(bsc);
     CHECK_WRITE(BKOFF_SLOT_CFG, status);
 
+    TxSwCfg0 tsc0;
     // TX_SW_CFG register values come from Linux kernel driver
-    reg = set_bits(TX_SW_CFG0_DLY_TXPE_EN, TX_SW_CFG_WIDTH, 0, 0x04);
-    reg = set_bits(TX_SW_CFG0_DLY_PAPE_EN, TX_SW_CFG_WIDTH, reg, 0x04);
+    tsc0.set_dly_txpe_en(0x04);
+    tsc0.set_dly_pape_en(0x04);
     // All other TX_SW_CFG0 values are 0 (set by using 0 as starting value)
-    status = WriteRegister(TX_SW_CFG0, reg);
+    status = WriteRegister(tsc0);
     CHECK_WRITE(TX_SW_CFG0, status);
 
-    reg = set_bits(TX_SW_CFG1_DLY_PAPE_DIS, TX_SW_CFG_WIDTH, 0, 0x06);
-    reg = set_bits(TX_SW_CFG1_DLY_TRSW_DIS, TX_SW_CFG_WIDTH, reg, 0x06);
-    reg = set_bits(TX_SW_CFG1_DLY_RFTR_DIS, TX_SW_CFG_WIDTH, reg, 0x08);
-    status = WriteRegister(TX_SW_CFG1, reg);
+    TxSwCfg1 tsc1;
+    tsc1.set_dly_pape_dis(0x06);
+    tsc1.set_dly_trsw_dis(0x06);
+    tsc1.set_dly_rftr_dis(0x08);
+    status = WriteRegister(tsc1);
     CHECK_WRITE(TX_SW_CFG1, status);
 
-    status = WriteRegister(TX_SW_CFG2, 0);
+    TxSwCfg2 tsc2;
+    // All bits set to zero.
+    status = WriteRegister(tsc2);
     CHECK_WRITE(TX_SW_CFG2, status);
 
-    status = ReadRegister(TX_LINK_CFG, &reg);
+    TxLinkCfg tlc;
+    status = ReadRegister(&tlc);
     CHECK_READ(TX_LINK_CFG, status);
-    reg = set_bits(TX_LINK_CFG_REMOTE_MFB_LIFETIME_OFFSET, TX_LINK_CFG_REMOTE_MFB_LIFETIME_WIDTH, reg, 32);
-    reg = clear_bit(TX_LINK_CFG_TX_MFB_EN, reg);
-    reg = clear_bit(TX_LINK_CFG_REMOTE_UMFS_EN, reg);
-    reg = clear_bit(TX_LINK_CFG_TX_MRQ_EN, reg);
-    reg = clear_bit(TX_LINK_CFG_TX_RDG_EN, reg);
-    reg = set_bit(TX_LINK_CFG_TX_CFACK_EN, reg);
-    reg = set_bits(TX_LINK_CFG_REMOTE_MFB_OFFSET, TX_LINK_CFG_REMOTE_MFB_WIDTH, reg, 0);
-    reg = set_bits(TX_LINK_CFG_REMOTE_MFS_OFFSET, TX_LINK_CFG_REMOTE_MFS_WIDTH, reg, 0);
-    status = WriteRegister(TX_LINK_CFG, reg);
+    tlc.set_remote_mfb_lifetime(32);
+    tlc.set_tx_mfb_en(0);
+    tlc.set_remote_umfs_en(0);
+    tlc.set_tx_mrq_en(0);
+    tlc.set_tx_rdg_en(0);
+    tlc.set_tx_cfack_en(1);
+    tlc.set_remote_mfb(0);
+    tlc.set_remote_mfs(0);
+    status = WriteRegister(tlc);
     CHECK_WRITE(TX_LINK_CFG, status);
 
-    status = ReadRegister(TX_TIMEOUT_CFG, &reg);
+    TxTimeoutCfg ttc;
+    status = ReadRegister(&ttc);
     CHECK_READ(TX_TIMEOUT_CFG, status);
-    reg = set_bits(TX_TIMEOUT_CFG_MPDU_LIFE_TIME_OFFSET, TX_TIMEOUT_CFG_MPDU_LIFE_TIME_WIDTH, reg, 9);
-    reg = set_bits(TX_TIMEOUT_CFG_RX_ACK_TIMEOUT_OFFSET, TX_TIMEOUT_CFG_RX_ACK_TIMEOUT_WIDTH, reg, 32);
-    reg = set_bits(TX_TIMEOUT_CFG_TXOP_TIMEOUT_OFFSET, TX_TIMEOUT_CFG_TXOP_TIMEOUT_WIDTH, reg, 10);
-    status = WriteRegister(TX_TIMEOUT_CFG, reg);
+    ttc.set_mpdu_life_time(9);
+    ttc.set_rx_ack_timeout(32);
+    ttc.set_txop_timeout(10);
+    status = WriteRegister(ttc);
     CHECK_WRITE(TX_TIMEOUT_CFG, status);
 
-    status = ReadRegister(MAX_LEN_CFG, &reg);
+    MaxLenCfg mlc;
+    status = ReadRegister(&mlc);
     CHECK_READ(MAX_LEN_CFG, status);
-    reg = set_bits(MAX_LEN_CFG_MAX_MPDU_LEN_OFFSET, MAX_LEN_CFG_MAX_MPDU_LEN_WIDTH, reg, 3840);
-    reg = set_bits(MAX_LEN_CFG_MAX_PSDU_LEN_OFFSET, MAX_LEN_CFG_MAX_PSDU_LEN_WIDTH, reg, 1);
-    reg = set_bits(MAX_LEN_CFG_MIN_PSDU_LEN_OFFSET, MAX_LEN_CFG_MIN_PSDU_LEN_WIDTH, reg, 0);
-    reg = set_bits(MAX_LEN_CFG_MIN_MPDU_LEN_OFFSET, MAX_LEN_CFG_MIN_MPDU_LEN_WIDTH, reg, 0);
-    status = WriteRegister(MAX_LEN_CFG, reg);
+    mlc.set_max_mpdu_len(3840);
+    mlc.set_max_psdu_len(1);
+    mlc.set_min_psdu_len(0);
+    mlc.set_min_mpdu_len(0);
+    status = WriteRegister(mlc);
     CHECK_WRITE(MAX_LEN_CFG, status);
 
     // TODO: LED_CFG
 
-    reg = set_bits(MAX_PCNT_MAX_RX0Q_PCNT_OFFSET, MAX_PCNT_WIDTH, 0, 0x9f);
-    reg = set_bits(MAX_PCNT_MAX_TX2Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0xbf);
-    reg = set_bits(MAX_PCNT_MAX_TX1Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0x3f);
-    reg = set_bits(MAX_PCNT_MAX_TX0Q_PCNT_OFFSET, MAX_PCNT_WIDTH, reg, 0x1f);
-    status = WriteRegister(MAX_PCNT, reg);
+    MaxPcnt mp;
+    mp.set_max_rx0q_pcnt(0x9f);
+    mp.set_max_tx2q_pcnt(0xbf);
+    mp.set_max_tx1q_pcnt(0x3f);
+    mp.set_max_tx0q_pcnt(0x1f);
+    status = WriteRegister(mp);
     CHECK_WRITE(MAX_PCNT, status);
 
-    status = ReadRegister(TX_RTY_CFG, &reg);
+    TxRtyCfg trc;
+    status = ReadRegister(&trc);
     CHECK_READ(TX_RTY_CFG, status);
-    reg = set_bits(TX_RTY_CFG_SHORT_RTY_LIMIT_OFFSET, TX_RTY_CFG_SHORT_RTY_LIMIT_WIDTH, reg, 15);
-    reg = set_bits(TX_RTY_CFG_LONG_RTY_LIMIT_OFFSET, TX_RTY_CFG_LONG_RTY_LIMIT_WIDTH, reg, 31);
-    reg = set_bits(TX_RTY_CFG_LONG_RTY_THRES_OFFSET, TX_RTY_CFG_LONG_RTY_THRES_WIDTH, reg, 2000);
-    reg = clear_bit(TX_RTY_CFG_NAG_RTY_MODE, reg);
-    reg = clear_bit(TX_RTY_CFG_AGG_RTY_MODE, reg);
-    reg = set_bit(TX_RTY_CFG_TX_AUTOFB_EN, reg);
-    status = WriteRegister(TX_RTY_CFG, reg);
+    trc.set_short_rty_limit(15);
+    trc.set_long_rty_limit(31);
+    trc.set_long_rty_thres(2000);
+    trc.set_nag_rty_mode(0);
+    trc.set_agg_rty_mode(0);
+    trc.set_tx_autofb_en(1);
+    status = WriteRegister(trc);
     CHECK_WRITE(TX_RTY_CFG, status);
+
+    AutoRspCfg arc;
+    status = ReadRegister(&arc);
+    CHECK_READ(AUTO_RSP_CFG, status);
+    arc.set_auto_rsp_en(1);
+    arc.set_bac_ackpolicy_en(1);
+    arc.set_cts_40m_mode(0);
+    arc.set_cts_40m_ref(0);
+    arc.set_cck_short_en(1);
+    arc.set_bac_ack_policy(0);
+    arc.set_ctrl_pwr_bit(0);
+    status = WriteRegister(arc);
+    CHECK_WRITE(AUTO_RSP_CFG, status);
+
+    //status = ReadRegister(CCK_PROT_CFG, &reg);
 
     return NO_ERROR;
 }
 
 mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1) {
-    uint32_t reg = 0;
+    H2mMailboxCsr hmc;
     unsigned int busy = 0;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        auto status = ReadRegister(H2M_MAILBOX_CSR, &reg);
+        auto status = ReadRegister(&hmc);
         CHECK_READ(H2M_MAILBOX_CSR, status);
-        if (!get_bits(H2M_MAILBOX_CSR_OWNER_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg)) break;
+        if (!hmc.owner()) break;
         mxsleep(kRegisterBusyWait);
     }
     if (busy == kMaxBusyReads) {
         std::printf("rt5370 timed out waiting for MCU ready\n");
         return ERR_TIMED_OUT;
     }
-    reg = set_bits(H2M_MAILBOX_CSR_OWNER_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, 1);
-    reg = set_bits(H2M_MAILBOX_CSR_CMD_TOKEN_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, token);
-    reg = set_bits(H2M_MAILBOX_CSR_ARG0_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, arg0);
-    reg = set_bits(H2M_MAILBOX_CSR_ARG1_OFFSET, H2M_MAILBOX_CSR_WIDTH, reg, arg1);
-    auto status = WriteRegister(H2M_MAILBOX_CSR, reg);
+    hmc.set_owner(1);
+    hmc.set_cmd_token(token);
+    hmc.set_arg0(arg0);
+    hmc.set_arg1(arg1);
+    auto status = WriteRegister(hmc);
     CHECK_WRITE(H2M_MAILBOX_CSR, status);
 
-    status = WriteRegister(HOST_CMD, command);
+    HostCmd hc;
+    hc.set_command(command);
+    status = WriteRegister(hc);
     CHECK_WRITE(HOST_CMD, status);
     mxsleep(1ms);
 
@@ -717,15 +765,15 @@ mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uin
 }
 
 mx_status_t Device::DisableWpdma() {
-    uint32_t reg = 0;
-    auto status = ReadRegister(WPDMA_GLO_CFG, &reg);
+    WpdmaGloCfg wgc;
+    auto status = ReadRegister(&wgc);
     CHECK_READ(WPDMA_GLO_CFG, status);
-    reg = clear_bit(WPDMA_GLO_CFG_TX_DMA_EN, reg);
-    reg = clear_bit(WPDMA_GLO_CFG_TX_DMA_BUSY, reg);
-    reg = clear_bit(WPDMA_GLO_CFG_RX_DMA_EN, reg);
-    reg = clear_bit(WPDMA_GLO_CFG_RX_DMA_BUSY, reg);
-    reg = set_bit(WPDMA_GLO_CFG_TX_WB_DDONE, reg);
-    status = WriteRegister(WPDMA_GLO_CFG, reg);
+    wgc.set_tx_dma_en(0);
+    wgc.set_tx_dma_busy(0);
+    wgc.set_rx_dma_en(0);
+    wgc.set_rx_dma_busy(0);
+    wgc.set_tx_wb_ddone(1);
+    status = WriteRegister(wgc);
     CHECK_WRITE(WPDMA_GLO_CFG, status);
     std::printf("rt5370 disabled WPDMA\n");
     return NO_ERROR;
@@ -752,11 +800,11 @@ mx_status_t Device::DetectAutoRun(bool* autorun) {
 
 mx_status_t Device::WaitForMacCsr() {
     unsigned int busy = 0;
-    uint32_t reg = 0;
+    AsicVerId avi;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        auto status = ReadRegister(MAC_CSR0, &reg);
+        auto status = ReadRegister(&avi);
         CHECK_READ(MAC_CSR0, status);
-        if (reg && reg != ~0u) break;
+        if (avi.val() && avi.val() != ~0u) break;
         mxsleep(1ms);
     }
     if (busy == kMaxBusyReads) {
