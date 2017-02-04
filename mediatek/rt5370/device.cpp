@@ -730,7 +730,53 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(arc);
     CHECK_WRITE(AUTO_RSP_CFG, status);
 
-    //status = ReadRegister(CCK_PROT_CFG, &reg);
+    CckProtCfg cpc;
+    status = ReadRegister(&cpc);
+    CHECK_READ(CCK_PROT_CFG, status);
+    cpc.set_prot_rate(3);
+    cpc.set_prot_ctrl(0);
+    cpc.set_prot_nav(1);
+    cpc.set_txop_allow_cck_tx(1);
+    cpc.set_txop_allow_ofdm_tx(1);
+    cpc.set_txop_allow_mm20_tx(1);
+    cpc.set_txop_allow_mm40_tx(0);
+    cpc.set_txop_allow_gf20_tx(1);
+    cpc.set_txop_allow_gf40_tx(0);
+    cpc.set_rtsth_en(1);
+    status = WriteRegister(cpc);
+    CHECK_WRITE(CCK_PROT_CFG, status);
+
+    OfdmProtCfg opc;
+    status = ReadRegister(&opc);
+    CHECK_READ(OFDM_PROT_CFG, status);
+    opc.set_prot_rate(3);
+    opc.set_prot_ctrl(0);
+    opc.set_prot_nav(1);
+    opc.set_txop_allow_cck_tx(1);
+    opc.set_txop_allow_ofdm_tx(1);
+    opc.set_txop_allow_mm20_tx(1);
+    opc.set_txop_allow_mm40_tx(0);
+    opc.set_txop_allow_gf20_tx(1);
+    opc.set_txop_allow_gf40_tx(0);
+    opc.set_rtsth_en(1);
+    status = WriteRegister(opc);
+    CHECK_WRITE(OFDM_PROT_CFG, status);
+
+    Mm20ProtCfg mm20pc;
+    status = ReadRegister(&mm20pc);
+    CHECK_READ(MM20_PROT_CFG, status);
+    mm20pc.set_prot_rate(0x4004);
+    mm20pc.set_prot_ctrl(0);
+    mm20pc.set_prot_nav(1);
+    mm20pc.set_txop_allow_cck_tx(1);
+    mm20pc.set_txop_allow_ofdm_tx(1);
+    mm20pc.set_txop_allow_mm20_tx(1);
+    mm20pc.set_txop_allow_mm40_tx(0);
+    mm20pc.set_txop_allow_gf20_tx(1);
+    mm20pc.set_txop_allow_gf40_tx(0);
+    mm20pc.set_rtsth_en(0);
+    status = WriteRegister(mm20pc);
+    CHECK_WRITE(MM20_PROT_CFG, status);
 
     return NO_ERROR;
 }
