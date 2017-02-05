@@ -61,6 +61,15 @@ class UsbDmaCfg : public Register<0x02a0> {
     REG_FIELD(tx_busy, 31, 1);
 };
 
+class UsCycCnt : public Register<0x02a4> {
+  public:
+    REG_FIELD(us_cyc_count, 0, 8);
+    REG_FIELD(bt_mode_en, 8, 1);
+    REG_FIELD(test_sel, 16, 8);
+    REG_FIELD(test_en, 24, 1);
+    REG_FIELD(edt_bypass, 28, 1);
+};
+
 class SysCtrl : public Register<0x0400> {
   public:
     REG_FIELD(mcu_ready, 7, 1);
@@ -134,10 +143,44 @@ class MaxLenCfg : public Register<0x1018> {
     REG_FIELD(min_mpdu_len, 16, 4);
 };
 
+class BbpCsrCfg : public Register<0x101c> {
+  public:
+    REG_FIELD(bbp_data, 0, 8);
+    REG_FIELD(bbp_addr, 8, 8);
+    REG_FIELD(bbp_csr_rw, 16, 1);
+    REG_FIELD(bbp_csr_kick, 17, 1);
+    REG_FIELD(bbp_par_dur, 18, 1);
+    REG_FIELD(bbp_rw_mode, 19, 1);
+};
+
+class ForceBaWinsize : public Register<0x1040> {
+  public:
+    REG_FIELD(force_ba_winsize, 0, 6);
+    REG_FIELD(force_ba_winsize_en, 6, 1);
+};
+
+class XifsTimeCfg : public Register<0x1100> {
+  public:
+    REG_FIELD(cck_sifs_time, 0, 8);
+    REG_FIELD(ofdm_sifs_time, 8, 8);
+    REG_FIELD(ofdm_xifs_time, 16, 4);
+    REG_FIELD(eifs_time, 20, 9);
+    REG_FIELD(bb_rxend_en, 29, 1);
+};
+
 class BkoffSlotCfg : public Register<0x1104> {
   public:
     REG_FIELD(slot_time, 0, 8);
     REG_FIELD(cc_delay_time, 8, 4);
+};
+
+class ChTimeCfg : public Register<0x110c> {
+  public:
+    REG_FIELD(ch_sta_timer_en, 0, 1);
+    REG_FIELD(tx_as_ch_busy, 1, 1);
+    REG_FIELD(rx_as_ch_busy, 2, 1);
+    REG_FIELD(nav_as_ch_busy, 3, 1);
+    REG_FIELD(eifs_as_ch_busy, 4, 1);
 };
 
 class BcnTimeCfg : public Register<0x1114> {
@@ -148,6 +191,26 @@ class BcnTimeCfg : public Register<0x1114> {
     REG_FIELD(tbtt_timer_en, 19, 1);
     REG_FIELD(bcn_tx_en, 20, 1);
     REG_FIELD(tsf_ins_comp, 24, 8);
+};
+
+class IntTimerCfg : public Register<0x1128> {
+  public:
+    REG_FIELD(pre_tbtt_timer, 0, 16);
+    REG_FIELD(gp_timer, 16, 16);
+};
+
+class MacStatusReg : public Register<0x1200> {
+  public:
+    REG_FIELD(tx_status, 0, 1);
+    REG_FIELD(rx_status, 1, 1);
+};
+
+class PwrPinCfg : public Register<0x1204> {
+  public:
+    REG_FIELD(io_rf_pe, 0, 1);
+    REG_FIELD(io_ra_pe, 1, 1);
+    REG_FIELD(io_pll_pd, 2, 1);
+    REG_FIELD(io_adda_pd, 3, 1);
 };
 
 class AutoWakeupCfg : public Register<0x1208> {
@@ -225,6 +288,50 @@ class TxLinkCfg : public Register<0x1350> {
     REG_FIELD(tx_cfack_en, 12, 1);
     REG_FIELD(remote_mfb, 16, 8);
     REG_FIELD(remote_mfs, 24, 8);
+};
+
+class HtFbkCfg0 : public Register<0x1354> {
+  public:
+    REG_FIELD(ht_mcs0_fbk, 0, 4);
+    REG_FIELD(ht_mcs1_fbk, 4, 4);
+    REG_FIELD(ht_mcs2_fbk, 8, 4);
+    REG_FIELD(ht_mcs3_fbk, 12, 4);
+    REG_FIELD(ht_mcs4_fbk, 16, 4);
+    REG_FIELD(ht_mcs5_fbk, 20, 4);
+    REG_FIELD(ht_mcs6_fbk, 24, 4);
+    REG_FIELD(ht_mcs7_fbk, 28, 4);
+};
+
+class HtFbkCfg1 : public Register<0x1358> {
+  public:
+    REG_FIELD(ht_mcs8_fbk, 0, 4);
+    REG_FIELD(ht_mcs9_fbk, 4, 4);
+    REG_FIELD(ht_mcs10_fbk, 8, 4);
+    REG_FIELD(ht_mcs11_fbk, 12, 4);
+    REG_FIELD(ht_mcs12_fbk, 16, 4);
+    REG_FIELD(ht_mcs13_fbk, 20, 4);
+    REG_FIELD(ht_mcs14_fbk, 24, 4);
+    REG_FIELD(ht_mcs15_fbk, 28, 4);
+};
+
+class LgFbkCfg0 : public Register<0x135c> {
+  public:
+    REG_FIELD(ofdm0_fbk, 0, 4);
+    REG_FIELD(ofdm1_fbk, 4, 4);
+    REG_FIELD(ofdm2_fbk, 8, 4);
+    REG_FIELD(ofdm3_fbk, 12, 4);
+    REG_FIELD(ofdm4_fbk, 16, 4);
+    REG_FIELD(ofdm5_fbk, 20, 4);
+    REG_FIELD(ofdm6_fbk, 24, 4);
+    REG_FIELD(ofdm7_fbk, 28, 4);
+};
+
+class LgFbkCfg1 : public Register<0x1360> {
+  public:
+    REG_FIELD(cck0_fbk, 0, 4);
+    REG_FIELD(cck1_fbk, 4, 4);
+    REG_FIELD(cck2_fbk, 8, 4);
+    REG_FIELD(cck3_fbk, 12, 4);
 };
 
 template<uint16_t A>
@@ -321,6 +428,42 @@ class TxopHldrEt : public Register<0x1608> {
     REG_FIELD(ampdu_acc_en, 24, 1);
 };
 
+class RxStaCnt0 : public Register<0x1700> {
+  public:
+    REG_FIELD(crc_errcnt, 0, 16);
+    REG_FIELD(phy_errcnt, 16, 16);
+};
+
+class RxStaCnt1 : public Register<0x1704> {
+  public:
+    REG_FIELD(cca_errcnt, 0, 16);
+    REG_FIELD(plpc_errcnt, 16, 16);
+};
+
+class RxStaCnt2 : public Register<0x1708> {
+  public:
+    REG_FIELD(rx_dupl_cnt, 0, 16);
+    REG_FIELD(rx_ovfl_cnt, 16, 16);
+};
+
+class TxStaCnt0 : public Register<0x170c> {
+  public:
+    REG_FIELD(tx_fail_cnt, 0, 16);
+    REG_FIELD(tx_bcn_cnt, 16, 16);
+};
+
+class TxStaCnt1 : public Register<0x1710> {
+  public:
+    REG_FIELD(tx_succ_cnt, 0, 16);
+    REG_FIELD(tx_rty_cnt, 16, 16);
+};
+
+class TxStaCnt2 : public Register<0x1714> {
+  public:
+    REG_FIELD(tx_zero_cnt, 0, 16);
+    REG_FIELD(tx_udfl_cnt, 16, 16);
+};
+
 // EEPROM offsets
 constexpr uint16_t EEPROM_CHIP_ID = 0x0000;
 constexpr uint16_t EEPROM_VERSION = 0x0001;
@@ -357,6 +500,7 @@ constexpr int EEPROM_NIC_CONF1_HW_RADIO   = 0;  // 0x0001
 constexpr int EEPROM_NIC_CONF1_BT_COEXIST = 14; // 0x4000
 
 // Host to MCU communication
+
 class H2mMailboxCsr : public Register<0x7010> {
   public:
     REG_FIELD(arg0, 0, 8);
@@ -365,10 +509,17 @@ class H2mMailboxCsr : public Register<0x7010> {
     REG_FIELD(owner, 24, 8);
 };
 
-constexpr uint16_t H2M_MAILBOX_CID = 0x7014;
-constexpr uint16_t H2M_MAILBOX_STATUS = 0x701c;
-constexpr uint16_t H2M_INT_SRC = 0x7024;
-constexpr uint16_t H2M_BBP_AGENT = 0x7028;
+class H2mMailboxCid : public Register<0x7014> {
+  public:
+    REG_FIELD(cmd0, 0, 8);
+    REG_FIELD(cmd1, 8, 8);
+    REG_FIELD(cmd2, 16, 8);
+    REG_FIELD(cmd3, 24, 8);
+};
+
+class H2mMailboxStatus : public Register<0x701c> {};
+class H2mBbpAgent : public Register<0x7028> {};
+class H2mIntSrc : public Register<0x7024> {};
 
 // MCU commands
 constexpr uint8_t MCU_BOOT_SIGNAL = 0x72;

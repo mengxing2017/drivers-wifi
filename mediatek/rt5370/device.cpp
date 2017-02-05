@@ -13,7 +13,6 @@
 #include <endian.h>
 
 #include <algorithm>
-#include <chrono>
 #include <cstdio>
 #include <future>
 
@@ -43,7 +42,6 @@ constexpr size_t kWriteBufSize = 4096;  // todo: use endpt max size
 constexpr char kFirmwareFile[] = "rt2870.bin";
 
 constexpr int kMaxBusyReads = 20;
-constexpr auto kRegisterBusyWait = 100us;
 
 constexpr uint32_t get_bits(uint8_t offset, uint8_t len, uint32_t bitmask) {
     auto mask = ((1 << len) - 1) << offset;
@@ -244,16 +242,13 @@ mx_status_t Device::ReadEeprom() {
         CHECK_WRITE(EFUSE_CTRL, status);
 
         // Wait until the registers are ready for reading.
-        unsigned int busy = 0;
-        for (busy = 0; busy < kMaxBusyReads; busy++) {
-            status = ReadRegister(&ec);
-            CHECK_READ(EFUSE_CTRL, status);
-            if (!ec.efsrom_kick()) break;
-            mxsleep(kRegisterBusyWait);
-        }
-        if (busy == kMaxBusyReads) {
-            std::printf("rt5370 Busy-wait for EFUSE_CTRL failed\n");
-            return ERR_TIMED_OUT;
+        BusyPredicate<EfuseCtrl> pred = [](EfuseCtrl* ec) { return !ec->efsrom_kick(); };
+        status = BusyWait(&ec, pred);
+        if (status < 0) {
+            if (status == ERR_TIMED_OUT) {
+                std::printf("rt5370 busy wait for EFUSE_CTRL failed\n");
+            }
+            return status;
         }
 
         // Read the registers into the eeprom. EEPROM is read in descending
@@ -429,9 +424,14 @@ mx_status_t Device::LoadFirmware() {
     }
     std::printf("rt5370 sent firmware\n");
 
-    status = WriteRegister(H2M_MAILBOX_CID, ~0);
+    H2mMailboxCid hmc;
+    hmc.set_val(~0);
+    status = WriteRegister(hmc);
     CHECK_WRITE(H2M_MAILBOX_CID, status);
-    status = WriteRegister(H2M_MAILBOX_STATUS, ~0);
+
+    H2mMailboxStatus hms;
+    hms.set_val(~0);
+    status = WriteRegister(hms);
     CHECK_WRITE(H2M_MAILBOX_STATUS, status);
 
     // Tell the device to load the firmware
@@ -443,17 +443,14 @@ mx_status_t Device::LoadFirmware() {
     }
     mxsleep(10ms);
 
-    unsigned int busy = 0;
     SysCtrl sc;
-    for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(&sc);
-        CHECK_READ(SYS_CTRL, status);
-        if (sc.mcu_ready()) break;
-        mxsleep(1ms);
-    }
-    if (busy == kMaxBusyReads) {
-        std::printf("rt5370 system MCU not ready\n");
-        return ERR_TIMED_OUT;
+    BusyPredicate<SysCtrl> pred = [](SysCtrl* sc) { return sc->mcu_ready(); };
+    status = BusyWait(&sc, pred, 1ms);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 system MCU not ready\n");
+        }
+        return status;
     }
 
     // Disable WPDMA again
@@ -461,13 +458,18 @@ mx_status_t Device::LoadFirmware() {
     if (status != NO_ERROR) return status;
 
     // Initialize firmware and boot the MCU
-    status = WriteRegister(H2M_BBP_AGENT, 0);
+    H2mBbpAgent hba;
+    status = WriteRegister(hba);
     CHECK_WRITE(H2M_BBP_AGENT, status);
-    H2mMailboxCsr hmc;
-    status = WriteRegister(hmc);
+
+    H2mMailboxCsr hmcsr;
+    status = WriteRegister(hmcsr);
     CHECK_WRITE(H2M_MAILBOX_CSR, status);
-    status = WriteRegister(H2M_INT_SRC, 0);
+
+    H2mIntSrc his;
+    status = WriteRegister(his);
     CHECK_WRITE(H2M_INT_SRC, status);
+
     status = McuCommand(MCU_BOOT_SIGNAL, 0, 0, 0);
     if (status < 0) {
         std::printf("rt5370 error booting MCU err=%d\n", status);
@@ -490,18 +492,15 @@ mx_status_t Device::EnableRadio() {
     mxsleep(1ms);
 
     // Wait for WPDMA to be ready
-    unsigned int busy = 0;
     WpdmaGloCfg wgc;
-    for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(&wgc);
-        if (!wgc.tx_dma_busy() && !wgc.rx_dma_busy()) {
-            break;
+    BusyPredicate<WpdmaGloCfg> wpdma_pred =
+        [](WpdmaGloCfg* wgc) { return !wgc->tx_dma_busy() && !wgc->rx_dma_busy(); };
+    status = BusyWait(&wgc, wpdma_pred, 10ms);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 WPDMA busy\n");
         }
-        mxsleep(10ms);
-    }
-    if (busy == kMaxBusyReads) {
-        std::printf("rt5370 WPDMA busy\n");
-        return ERR_TIMED_OUT;
+        return status;
     }
 
     // Set up USB DMA
@@ -522,16 +521,12 @@ mx_status_t Device::EnableRadio() {
     CHECK_WRITE(USB_DMA_CFG, status);
 
     // Wait for WPDMA again
-    for (busy = 0; busy < kMaxBusyReads; busy++) {
-        status = ReadRegister(&wgc);
-        if (!wgc.tx_dma_busy() && !wgc.rx_dma_busy()) {
-            break;
+    status = BusyWait(&wgc, wpdma_pred, 10ms);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 WPDMA busy\n");
         }
-        mxsleep(10ms);
-    }
-    if (busy == kMaxBusyReads) {
-        std::printf("rt5370 WPDMA busy\n");
-        return ERR_TIMED_OUT;
+        return status;
     }
 
     status = InitRegisters();
@@ -540,6 +535,37 @@ mx_status_t Device::EnableRadio() {
         return status;
     }
 
+    // Wait for MAC status ready
+    MacStatusReg msr;
+    BusyPredicate<MacStatusReg> msr_pred =
+        [](MacStatusReg* msr) { return !msr->tx_status() && !msr->rx_status(); };
+    status = BusyWait(&msr, msr_pred, 10ms);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 BBP busy\n");
+        }
+        return status;
+    }
+
+    // Initialize firmware
+    H2mBbpAgent hba;
+    status = WriteRegister(hba);
+    CHECK_WRITE(H2M_BBP_AGENT, status);
+
+    H2mMailboxCsr hmc;
+    status = WriteRegister(hmc);
+    CHECK_WRITE(H2M_MAILBOX_CSR, status);
+
+    H2mIntSrc his;
+    status = WriteRegister(his);
+    CHECK_WRITE(H2M_INT_SRC, status);
+
+    status = McuCommand(MCU_BOOT_SIGNAL, 0, 0, 0);
+    if (status < 0) {
+        std::printf("rt5370 error booting MCU err=%d\n", status);
+        return status;
+    }
+    mxsleep(1ms);
     return NO_ERROR;
 }
 
@@ -555,22 +581,28 @@ mx_status_t Device::InitRegisters() {
         return status;
     }
 
-    SysCtrl sc;
-    status = ReadRegister(&sc);
-    CHECK_READ(SYS_CTRL, status);
-    sc.set_pme_oen(0);
-    status = WriteRegister(sc);
-    CHECK_WRITE(SYS_CTRL, status);
+    {
+        SysCtrl sc;
+        status = ReadRegister(&sc);
+        CHECK_READ(SYS_CTRL, status);
+        sc.set_pme_oen(0);
+        status = WriteRegister(sc);
+        CHECK_WRITE(SYS_CTRL, status);
+    }
 
-    MacSysCtrl msc;
-    msc.set_mac_srst(1);
-    msc.set_bbp_hrst(1);
-    status = WriteRegister(msc);
-    CHECK_WRITE(MAC_SYS_CTRL, status);
+    {
+        MacSysCtrl msc;
+        msc.set_mac_srst(1);
+        msc.set_bbp_hrst(1);
+        status = WriteRegister(msc);
+        CHECK_WRITE(MAC_SYS_CTRL, status);
+    }
 
-    UsbDmaCfg udc;
-    status = WriteRegister(udc);
-    CHECK_WRITE(USB_DMA_CFG, status);
+    {
+        UsbDmaCfg udc;
+        status = WriteRegister(udc);
+        CHECK_WRITE(USB_DMA_CFG, status);
+    }
 
     status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kDeviceMode,
             kReset, 0, NULL, 0);
@@ -578,227 +610,526 @@ mx_status_t Device::InitRegisters() {
         std::printf("rt5370 failed reset\n");
         return status;
     }
- 
-    msc.clear();
-    status = WriteRegister(msc);
-    CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    LegacyBasicRate lbr;
-    lbr.set_rate_1mbps(1);
-    lbr.set_rate_2mbps(1);
-    lbr.set_rate_5_5mbps(1);
-    lbr.set_rate_11mbps(1);
-    lbr.set_rate_6mbps(1);
-    lbr.set_rate_9mbps(1);
-    lbr.set_rate_24mbps(1);
-    status = WriteRegister(lbr);
-    CHECK_WRITE(LEGACY_BASIC_RATE, status);
+    {
+        MacSysCtrl msc;
+        status = WriteRegister(msc);
+        CHECK_WRITE(MAC_SYS_CTRL, status);
+    }
 
-    // Magic number from Linux kernel driver
-    HtBasicRate hbr;
-    hbr.set_val(0x8003);
-    status = WriteRegister(hbr);
-    CHECK_WRITE(HT_BASIC_RATE, status);
+    {
+        LegacyBasicRate lbr;
+        lbr.set_rate_1mbps(1);
+        lbr.set_rate_2mbps(1);
+        lbr.set_rate_5_5mbps(1);
+        lbr.set_rate_11mbps(1);
+        lbr.set_rate_6mbps(1);
+        lbr.set_rate_9mbps(1);
+        lbr.set_rate_24mbps(1);
+        status = WriteRegister(lbr);
+        CHECK_WRITE(LEGACY_BASIC_RATE, status);
+    }
 
-    status = WriteRegister(msc);
-    CHECK_WRITE(MAC_SYS_CTRL, status);
+    {
+        // Magic number from Linux kernel driver
+        HtBasicRate hbr;
+        hbr.set_val(0x8003);
+        status = WriteRegister(hbr);
+        CHECK_WRITE(HT_BASIC_RATE, status);
+    }
 
-    BcnTimeCfg btc;
-    status = ReadRegister(&btc);
-    CHECK_READ(BCN_TIME_CFG, status);
-    btc.set_bcn_intval(1600);
-    btc.set_tsf_timer_en(0);
-    btc.set_tsf_sync_mode(0);
-    btc.set_tbtt_timer_en(0);
-    btc.set_bcn_tx_en(0);
-    btc.set_tsf_ins_comp(0);
-    status = WriteRegister(btc);
-    CHECK_WRITE(BCN_TIME_CFG, status);
+    {
+        MacSysCtrl msc;
+        status = WriteRegister(msc);
+        CHECK_WRITE(MAC_SYS_CTRL, status);
+    }
 
-    RxFiltrCfg rfc;
-    status = ReadRegister(&rfc);
-    CHECK_READ(RX_FILTR_CFG, status);
-    rfc.set_drop_crc_err(1);
-    rfc.set_drop_phy_err(1);
-    rfc.set_drop_uc_nome(1);
-    rfc.set_drop_ver_err(1);
-    rfc.set_drop_dupl(1);
-    rfc.set_drop_cfack(1);
-    rfc.set_drop_cfend(1);
-    rfc.set_drop_ack(1);
-    rfc.set_drop_cts(1);
-    rfc.set_drop_rts(1);
-    rfc.set_drop_pspoll(1);
-    rfc.set_drop_bar(1);
-    rfc.set_drop_ctrl_rsv(1);
-    status = WriteRegister(rfc);
-    CHECK_WRITE(RX_FILTR_CFG, status);
+    {
+        BcnTimeCfg btc;
+        status = ReadRegister(&btc);
+        CHECK_READ(BCN_TIME_CFG, status);
+        btc.set_bcn_intval(1600);
+        btc.set_tsf_timer_en(0);
+        btc.set_tsf_sync_mode(0);
+        btc.set_tbtt_timer_en(0);
+        btc.set_bcn_tx_en(0);
+        btc.set_tsf_ins_comp(0);
+        status = WriteRegister(btc);
+        CHECK_WRITE(BCN_TIME_CFG, status);
+    }
 
-    BkoffSlotCfg bsc;
-    status = ReadRegister(&bsc);
-    CHECK_READ(BKOFF_SLOT_CFG, status);
-    bsc.set_slot_time(9);
-    bsc.set_cc_delay_time(2);
-    status = WriteRegister(bsc);
-    CHECK_WRITE(BKOFF_SLOT_CFG, status);
+    {
+        RxFiltrCfg rfc;
+        status = ReadRegister(&rfc);
+        CHECK_READ(RX_FILTR_CFG, status);
+        rfc.set_drop_crc_err(1);
+        rfc.set_drop_phy_err(1);
+        rfc.set_drop_uc_nome(1);
+        rfc.set_drop_ver_err(1);
+        rfc.set_drop_dupl(1);
+        rfc.set_drop_cfack(1);
+        rfc.set_drop_cfend(1);
+        rfc.set_drop_ack(1);
+        rfc.set_drop_cts(1);
+        rfc.set_drop_rts(1);
+        rfc.set_drop_pspoll(1);
+        rfc.set_drop_bar(1);
+        rfc.set_drop_ctrl_rsv(1);
+        status = WriteRegister(rfc);
+        CHECK_WRITE(RX_FILTR_CFG, status);
+    }
 
-    TxSwCfg0 tsc0;
-    // TX_SW_CFG register values come from Linux kernel driver
-    tsc0.set_dly_txpe_en(0x04);
-    tsc0.set_dly_pape_en(0x04);
-    // All other TX_SW_CFG0 values are 0 (set by using 0 as starting value)
-    status = WriteRegister(tsc0);
-    CHECK_WRITE(TX_SW_CFG0, status);
+    {
+        BkoffSlotCfg bsc;
+        status = ReadRegister(&bsc);
+        CHECK_READ(BKOFF_SLOT_CFG, status);
+        bsc.set_slot_time(9);
+        bsc.set_cc_delay_time(2);
+        status = WriteRegister(bsc);
+        CHECK_WRITE(BKOFF_SLOT_CFG, status);
+    }
 
-    TxSwCfg1 tsc1;
-    tsc1.set_dly_pape_dis(0x06);
-    tsc1.set_dly_trsw_dis(0x06);
-    tsc1.set_dly_rftr_dis(0x08);
-    status = WriteRegister(tsc1);
-    CHECK_WRITE(TX_SW_CFG1, status);
+    {
+        TxSwCfg0 tsc0;
+        // TX_SW_CFG register values come from Linux kernel driver
+        tsc0.set_dly_txpe_en(0x04);
+        tsc0.set_dly_pape_en(0x04);
+        // All other TX_SW_CFG0 values are 0 (set by using 0 as starting value)
+        status = WriteRegister(tsc0);
+        CHECK_WRITE(TX_SW_CFG0, status);
+    }
 
-    TxSwCfg2 tsc2;
-    // All bits set to zero.
-    status = WriteRegister(tsc2);
-    CHECK_WRITE(TX_SW_CFG2, status);
+    {
+        TxSwCfg1 tsc1;
+        tsc1.set_dly_pape_dis(0x06);
+        tsc1.set_dly_trsw_dis(0x06);
+        tsc1.set_dly_rftr_dis(0x08);
+        status = WriteRegister(tsc1);
+        CHECK_WRITE(TX_SW_CFG1, status);
+    }
 
-    TxLinkCfg tlc;
-    status = ReadRegister(&tlc);
-    CHECK_READ(TX_LINK_CFG, status);
-    tlc.set_remote_mfb_lifetime(32);
-    tlc.set_tx_mfb_en(0);
-    tlc.set_remote_umfs_en(0);
-    tlc.set_tx_mrq_en(0);
-    tlc.set_tx_rdg_en(0);
-    tlc.set_tx_cfack_en(1);
-    tlc.set_remote_mfb(0);
-    tlc.set_remote_mfs(0);
-    status = WriteRegister(tlc);
-    CHECK_WRITE(TX_LINK_CFG, status);
+    {
+        TxSwCfg2 tsc2;
+        // All bits set to zero.
+        status = WriteRegister(tsc2);
+        CHECK_WRITE(TX_SW_CFG2, status);
+    }
 
-    TxTimeoutCfg ttc;
-    status = ReadRegister(&ttc);
-    CHECK_READ(TX_TIMEOUT_CFG, status);
-    ttc.set_mpdu_life_time(9);
-    ttc.set_rx_ack_timeout(32);
-    ttc.set_txop_timeout(10);
-    status = WriteRegister(ttc);
-    CHECK_WRITE(TX_TIMEOUT_CFG, status);
+    {
+        TxLinkCfg tlc;
+        status = ReadRegister(&tlc);
+        CHECK_READ(TX_LINK_CFG, status);
+        tlc.set_remote_mfb_lifetime(32);
+        tlc.set_tx_mfb_en(0);
+        tlc.set_remote_umfs_en(0);
+        tlc.set_tx_mrq_en(0);
+        tlc.set_tx_rdg_en(0);
+        tlc.set_tx_cfack_en(1);
+        tlc.set_remote_mfb(0);
+        tlc.set_remote_mfs(0);
+        status = WriteRegister(tlc);
+        CHECK_WRITE(TX_LINK_CFG, status);
+    }
 
-    MaxLenCfg mlc;
-    status = ReadRegister(&mlc);
-    CHECK_READ(MAX_LEN_CFG, status);
-    mlc.set_max_mpdu_len(3840);
-    mlc.set_max_psdu_len(1);
-    mlc.set_min_psdu_len(0);
-    mlc.set_min_mpdu_len(0);
-    status = WriteRegister(mlc);
-    CHECK_WRITE(MAX_LEN_CFG, status);
+    {
+        TxTimeoutCfg ttc;
+        status = ReadRegister(&ttc);
+        CHECK_READ(TX_TIMEOUT_CFG, status);
+        ttc.set_mpdu_life_time(9);
+        ttc.set_rx_ack_timeout(32);
+        ttc.set_txop_timeout(10);
+        status = WriteRegister(ttc);
+        CHECK_WRITE(TX_TIMEOUT_CFG, status);
+    }
+
+    {
+        MaxLenCfg mlc;
+        status = ReadRegister(&mlc);
+        CHECK_READ(MAX_LEN_CFG, status);
+        mlc.set_max_mpdu_len(3840);
+        mlc.set_max_psdu_len(1);
+        mlc.set_min_psdu_len(0);
+        mlc.set_min_mpdu_len(0);
+        status = WriteRegister(mlc);
+        CHECK_WRITE(MAX_LEN_CFG, status);
+    }
 
     // TODO: LED_CFG
 
-    MaxPcnt mp;
-    mp.set_max_rx0q_pcnt(0x9f);
-    mp.set_max_tx2q_pcnt(0xbf);
-    mp.set_max_tx1q_pcnt(0x3f);
-    mp.set_max_tx0q_pcnt(0x1f);
-    status = WriteRegister(mp);
-    CHECK_WRITE(MAX_PCNT, status);
+    {
+        MaxPcnt mp;
+        mp.set_max_rx0q_pcnt(0x9f);
+        mp.set_max_tx2q_pcnt(0xbf);
+        mp.set_max_tx1q_pcnt(0x3f);
+        mp.set_max_tx0q_pcnt(0x1f);
+        status = WriteRegister(mp);
+        CHECK_WRITE(MAX_PCNT, status);
+    }
 
-    TxRtyCfg trc;
-    status = ReadRegister(&trc);
-    CHECK_READ(TX_RTY_CFG, status);
-    trc.set_short_rty_limit(15);
-    trc.set_long_rty_limit(31);
-    trc.set_long_rty_thres(2000);
-    trc.set_nag_rty_mode(0);
-    trc.set_agg_rty_mode(0);
-    trc.set_tx_autofb_en(1);
-    status = WriteRegister(trc);
-    CHECK_WRITE(TX_RTY_CFG, status);
+    {
+        TxRtyCfg trc;
+        status = ReadRegister(&trc);
+        CHECK_READ(TX_RTY_CFG, status);
+        trc.set_short_rty_limit(15);
+        trc.set_long_rty_limit(31);
+        trc.set_long_rty_thres(2000);
+        trc.set_nag_rty_mode(0);
+        trc.set_agg_rty_mode(0);
+        trc.set_tx_autofb_en(1);
+        status = WriteRegister(trc);
+        CHECK_WRITE(TX_RTY_CFG, status);
+    }
 
-    AutoRspCfg arc;
-    status = ReadRegister(&arc);
-    CHECK_READ(AUTO_RSP_CFG, status);
-    arc.set_auto_rsp_en(1);
-    arc.set_bac_ackpolicy_en(1);
-    arc.set_cts_40m_mode(0);
-    arc.set_cts_40m_ref(0);
-    arc.set_cck_short_en(1);
-    arc.set_bac_ack_policy(0);
-    arc.set_ctrl_pwr_bit(0);
-    status = WriteRegister(arc);
-    CHECK_WRITE(AUTO_RSP_CFG, status);
+    {
+        AutoRspCfg arc;
+        status = ReadRegister(&arc);
+        CHECK_READ(AUTO_RSP_CFG, status);
+        arc.set_auto_rsp_en(1);
+        arc.set_bac_ackpolicy_en(1);
+        arc.set_cts_40m_mode(0);
+        arc.set_cts_40m_ref(0);
+        arc.set_cck_short_en(1);
+        arc.set_bac_ack_policy(0);
+        arc.set_ctrl_pwr_bit(0);
+        status = WriteRegister(arc);
+        CHECK_WRITE(AUTO_RSP_CFG, status);
+    }
 
-    CckProtCfg cpc;
-    status = ReadRegister(&cpc);
-    CHECK_READ(CCK_PROT_CFG, status);
-    cpc.set_prot_rate(3);
-    cpc.set_prot_ctrl(0);
-    cpc.set_prot_nav(1);
-    cpc.set_txop_allow_cck_tx(1);
-    cpc.set_txop_allow_ofdm_tx(1);
-    cpc.set_txop_allow_mm20_tx(1);
-    cpc.set_txop_allow_mm40_tx(0);
-    cpc.set_txop_allow_gf20_tx(1);
-    cpc.set_txop_allow_gf40_tx(0);
-    cpc.set_rtsth_en(1);
-    status = WriteRegister(cpc);
-    CHECK_WRITE(CCK_PROT_CFG, status);
+    {
+        CckProtCfg cpc;
+        status = ReadRegister(&cpc);
+        CHECK_READ(CCK_PROT_CFG, status);
+        cpc.set_prot_rate(3);
+        cpc.set_prot_ctrl(0);
+        cpc.set_prot_nav(1);
+        cpc.set_txop_allow_cck_tx(1);
+        cpc.set_txop_allow_ofdm_tx(1);
+        cpc.set_txop_allow_mm20_tx(1);
+        cpc.set_txop_allow_mm40_tx(0);
+        cpc.set_txop_allow_gf20_tx(1);
+        cpc.set_txop_allow_gf40_tx(0);
+        cpc.set_rtsth_en(1);
+        status = WriteRegister(cpc);
+        CHECK_WRITE(CCK_PROT_CFG, status);
+    }
 
-    OfdmProtCfg opc;
-    status = ReadRegister(&opc);
-    CHECK_READ(OFDM_PROT_CFG, status);
-    opc.set_prot_rate(3);
-    opc.set_prot_ctrl(0);
-    opc.set_prot_nav(1);
-    opc.set_txop_allow_cck_tx(1);
-    opc.set_txop_allow_ofdm_tx(1);
-    opc.set_txop_allow_mm20_tx(1);
-    opc.set_txop_allow_mm40_tx(0);
-    opc.set_txop_allow_gf20_tx(1);
-    opc.set_txop_allow_gf40_tx(0);
-    opc.set_rtsth_en(1);
-    status = WriteRegister(opc);
-    CHECK_WRITE(OFDM_PROT_CFG, status);
+    {
+        OfdmProtCfg opc;
+        status = ReadRegister(&opc);
+        CHECK_READ(OFDM_PROT_CFG, status);
+        opc.set_prot_rate(3);
+        opc.set_prot_ctrl(0);
+        opc.set_prot_nav(1);
+        opc.set_txop_allow_cck_tx(1);
+        opc.set_txop_allow_ofdm_tx(1);
+        opc.set_txop_allow_mm20_tx(1);
+        opc.set_txop_allow_mm40_tx(0);
+        opc.set_txop_allow_gf20_tx(1);
+        opc.set_txop_allow_gf40_tx(0);
+        opc.set_rtsth_en(1);
+        status = WriteRegister(opc);
+        CHECK_WRITE(OFDM_PROT_CFG, status);
+    }
 
-    Mm20ProtCfg mm20pc;
-    status = ReadRegister(&mm20pc);
-    CHECK_READ(MM20_PROT_CFG, status);
-    mm20pc.set_prot_rate(0x4004);
-    mm20pc.set_prot_ctrl(0);
-    mm20pc.set_prot_nav(1);
-    mm20pc.set_txop_allow_cck_tx(1);
-    mm20pc.set_txop_allow_ofdm_tx(1);
-    mm20pc.set_txop_allow_mm20_tx(1);
-    mm20pc.set_txop_allow_mm40_tx(0);
-    mm20pc.set_txop_allow_gf20_tx(1);
-    mm20pc.set_txop_allow_gf40_tx(0);
-    mm20pc.set_rtsth_en(0);
-    status = WriteRegister(mm20pc);
-    CHECK_WRITE(MM20_PROT_CFG, status);
+    {
+        Mm20ProtCfg mm20pc;
+        status = ReadRegister(&mm20pc);
+        CHECK_READ(MM20_PROT_CFG, status);
+        mm20pc.set_prot_rate(0x4004);
+        mm20pc.set_prot_ctrl(0);
+        mm20pc.set_prot_nav(1);
+        mm20pc.set_txop_allow_cck_tx(1);
+        mm20pc.set_txop_allow_ofdm_tx(1);
+        mm20pc.set_txop_allow_mm20_tx(1);
+        mm20pc.set_txop_allow_mm40_tx(0);
+        mm20pc.set_txop_allow_gf20_tx(1);
+        mm20pc.set_txop_allow_gf40_tx(0);
+        mm20pc.set_rtsth_en(0);
+        status = WriteRegister(mm20pc);
+        CHECK_WRITE(MM20_PROT_CFG, status);
+    }
+
+    {
+        Mm40ProtCfg mm40pc;
+        status = ReadRegister(&mm40pc);
+        CHECK_READ(MM40_PROT_CFG, status);
+        mm40pc.set_prot_rate(0x4084);
+        mm40pc.set_prot_ctrl(1);
+        mm40pc.set_prot_nav(1);
+        mm40pc.set_txop_allow_cck_tx(0);
+        mm40pc.set_txop_allow_ofdm_tx(1);
+        mm40pc.set_txop_allow_mm20_tx(1);
+        mm40pc.set_txop_allow_mm40_tx(0);
+        mm40pc.set_txop_allow_gf20_tx(1);
+        mm40pc.set_txop_allow_gf40_tx(0);
+        mm40pc.set_rtsth_en(0);
+        status = WriteRegister(mm40pc);
+        CHECK_WRITE(MM40_PROT_CFG, status);
+    }
+
+    {
+        Gf20ProtCfg gf20pc;
+        status = ReadRegister(&gf20pc);
+        CHECK_READ(GF20_PROT_CFG, status);
+        gf20pc.set_prot_rate(0x4004);
+        gf20pc.set_prot_ctrl(1);
+        gf20pc.set_prot_nav(1);
+        gf20pc.set_txop_allow_cck_tx(0);
+        gf20pc.set_txop_allow_ofdm_tx(1);
+        gf20pc.set_txop_allow_mm20_tx(1);
+        gf20pc.set_txop_allow_mm40_tx(0);
+        gf20pc.set_txop_allow_gf20_tx(1);
+        gf20pc.set_txop_allow_gf40_tx(0);
+        gf20pc.set_rtsth_en(0);
+        status = WriteRegister(gf20pc);
+        CHECK_WRITE(GF20_PROT_CFG, status);
+    }
+
+    {
+        Gf40ProtCfg gf40pc;
+        status = ReadRegister(&gf40pc);
+        CHECK_READ(GF40_PROT_CFG, status);
+        gf40pc.set_prot_rate(0x4084);
+        gf40pc.set_prot_ctrl(1);
+        gf40pc.set_prot_nav(1);
+        gf40pc.set_txop_allow_cck_tx(0);
+        gf40pc.set_txop_allow_ofdm_tx(1);
+        gf40pc.set_txop_allow_mm20_tx(1);
+        gf40pc.set_txop_allow_mm40_tx(1);
+        gf40pc.set_txop_allow_gf20_tx(1);
+        gf40pc.set_txop_allow_gf40_tx(1);
+        gf40pc.set_rtsth_en(0);
+        status = WriteRegister(gf40pc);
+        CHECK_WRITE(GF40_PROT_CFG, status);
+    }
+
+    {
+        PbfCfg pc;
+        pc.set_rx0q_en(1);
+        pc.set_tx2q_en(1);
+        pc.set_tx2q_num(20);
+        pc.set_tx1q_num(7);
+        status = WriteRegister(pc);
+        CHECK_WRITE(PBF_CFG, status);
+    }
+
+    {
+        WpdmaGloCfg wgc;
+        status = ReadRegister(&wgc);
+        CHECK_READ(WPDMA_GLO_CFG, status);
+        wgc.set_tx_dma_en(0);
+        wgc.set_tx_dma_busy(0);
+        wgc.set_rx_dma_en(0);
+        wgc.set_rx_dma_busy(0);
+        wgc.set_wpdma_bt_size(3);
+        wgc.set_tx_wb_ddone(0);
+        wgc.set_big_endian(0);
+        wgc.set_hdr_seg_len(0);
+        status = WriteRegister(wgc);
+        CHECK_WRITE(WPDMA_GLO_CFG, status);
+    }
+
+    {
+        TxopCtrlCfg tcc;
+        status = ReadRegister(&tcc);
+        CHECK_READ(TXOP_CTRL_CFG, status);
+        tcc.set_txop_trun_en(0x3f);
+        tcc.set_lsig_txop_en(0);
+        tcc.set_ext_cca_en(0);
+        tcc.set_ext_cca_dly(88);
+        tcc.set_ext_cw_min(0);
+        status = WriteRegister(tcc);
+        CHECK_WRITE(TXOP_CTRL_CFG, status);
+    }
+
+    {
+        TxopHldrEt the;
+        the.set_tx40m_blk_en(1);
+        status = WriteRegister(the);
+        CHECK_WRITE(TXOP_HLDR_ET, status);
+    }
+
+    {
+        TxRtsCfg txrtscfg;
+        status = ReadRegister(&txrtscfg);
+        CHECK_READ(TX_RTS_CFG, status);
+        txrtscfg.set_rts_rty_limit(32);
+        txrtscfg.set_rts_thres(2353);  // IEEE80211_MAX_RTS_THRESHOLD in Linux
+        txrtscfg.set_rts_fbk_en(0);
+        status = WriteRegister(txrtscfg);
+        CHECK_WRITE(TX_RTS_CFG, status);
+    }
+
+    {
+        ExpAckTime eat;
+        eat.set_exp_cck_ack_time(0x00ca);
+        eat.set_exp_ofdm_ack_time(0x0024);
+        status = WriteRegister(eat);
+        CHECK_WRITE(EXP_ACK_TIME, status);
+    }
+
+    {
+        XifsTimeCfg xtc;
+        status = ReadRegister(&xtc);
+        CHECK_READ(XIFS_TIME_CFG, status);
+        xtc.set_cck_sifs_time(16);
+        xtc.set_ofdm_sifs_time(16);
+        xtc.set_ofdm_xifs_time(4);
+        xtc.set_eifs_time(314);
+        xtc.set_bb_rxend_en(1);
+        status = WriteRegister(xtc);
+        CHECK_WRITE(XIFS_TIME_CFG, status);
+    }
+
+    {
+        PwrPinCfg ppc;
+        ppc.set_io_rf_pe(1);
+        ppc.set_io_ra_pe(1);
+        status = WriteRegister(ppc);
+        CHECK_WRITE(PWR_PIN_CFG, status);
+    }
+
+    // SharedKeyModeEntries???
+
+    // WCID stuff and MacIveivEntries???
+
+    // Clear beacons
+
+    {
+        UsCycCnt ucc;
+        status = ReadRegister(&ucc);
+        CHECK_READ(US_CYC_CNT, status);
+        ucc.set_us_cyc_count(30);
+        status = WriteRegister(ucc);
+        CHECK_WRITE(US_CYC_CNT, status);
+    }
+
+    {
+        HtFbkCfg0 hfc0;
+        status = ReadRegister(&hfc0);
+        CHECK_READ(HT_FBK_CFG0, status);
+        hfc0.set_ht_mcs0_fbk(0);
+        hfc0.set_ht_mcs1_fbk(0);
+        hfc0.set_ht_mcs2_fbk(1);
+        hfc0.set_ht_mcs3_fbk(2);
+        hfc0.set_ht_mcs4_fbk(3);
+        hfc0.set_ht_mcs5_fbk(4);
+        hfc0.set_ht_mcs6_fbk(5);
+        hfc0.set_ht_mcs7_fbk(6);
+        status = WriteRegister(hfc0);
+        CHECK_WRITE(HT_FBK_CFG0, status);
+    }
+
+    {
+        HtFbkCfg1 hfc1;
+        status = ReadRegister(&hfc1);
+        CHECK_READ(HT_FBK_CFG1, status);
+        hfc1.set_ht_mcs8_fbk(8);
+        hfc1.set_ht_mcs9_fbk(8);
+        hfc1.set_ht_mcs10_fbk(9);
+        hfc1.set_ht_mcs11_fbk(10);
+        hfc1.set_ht_mcs12_fbk(11);
+        hfc1.set_ht_mcs13_fbk(12);
+        hfc1.set_ht_mcs14_fbk(13);
+        hfc1.set_ht_mcs15_fbk(14);
+        status = WriteRegister(hfc1);
+        CHECK_WRITE(HT_FBK_CFG1, status);
+    }
+
+    {
+        LgFbkCfg0 lfc0;
+        status = ReadRegister(&lfc0);
+        CHECK_READ(LG_FBK_CFG0, status);
+        lfc0.set_ofdm0_fbk(8);
+        lfc0.set_ofdm1_fbk(8);
+        lfc0.set_ofdm2_fbk(9);
+        lfc0.set_ofdm3_fbk(10);
+        lfc0.set_ofdm4_fbk(11);
+        lfc0.set_ofdm5_fbk(12);
+        lfc0.set_ofdm6_fbk(13);
+        lfc0.set_ofdm7_fbk(14);
+        status = WriteRegister(lfc0);
+        CHECK_WRITE(LG_FBK_CFG0, status);
+    }
+
+    {
+        LgFbkCfg1 lfc1;
+        status = ReadRegister(&lfc1);
+        CHECK_READ(LG_FBK_CFG1, status);
+        lfc1.set_cck0_fbk(0);
+        lfc1.set_cck1_fbk(0);
+        lfc1.set_cck2_fbk(1);
+        lfc1.set_cck3_fbk(2);
+        status = WriteRegister(lfc1);
+        CHECK_WRITE(LG_FBK_CFG1, status);
+    }
+
+    {
+        // Linux does not force BA window sizes.
+        ForceBaWinsize fbw;
+        status = ReadRegister(&fbw);
+        CHECK_READ(FORCE_BA_WINSIZE, status);
+        fbw.set_force_ba_winsize(0);
+        fbw.set_force_ba_winsize_en(0);
+        status = WriteRegister(fbw);
+        CHECK_WRITE(FORCE_BA_WINSIZE, status);
+    }
+
+    {
+        // Reading the stats counters will clear them. We don't need to look at the
+        // values.
+        RxStaCnt0 rsc0;
+        ReadRegister(&rsc0);
+        RxStaCnt1 rsc1;
+        ReadRegister(&rsc1);
+        RxStaCnt2 rsc2;
+        ReadRegister(&rsc2);
+        TxStaCnt0 tsc0;
+        ReadRegister(&tsc0);
+        TxStaCnt1 tsc1;
+        ReadRegister(&tsc1);
+        TxStaCnt2 tsc2;
+        ReadRegister(&tsc2);
+    }
+
+    {
+        IntTimerCfg itc;
+        status = ReadRegister(&itc);
+        CHECK_READ(INT_TIMER_CFG, status);
+        itc.set_pre_tbtt_timer(6 << 4);
+        status = WriteRegister(itc);
+        CHECK_WRITE(INT_TIMER_CFG, status);
+    }
+
+    {
+        ChTimeCfg ctc;
+        status = ReadRegister(&ctc);
+        CHECK_READ(CH_TIME_CFG, status);
+        ctc.set_ch_sta_timer_en(1);
+        ctc.set_tx_as_ch_busy(1);
+        ctc.set_rx_as_ch_busy(1);
+        ctc.set_nav_as_ch_busy(1);
+        ctc.set_eifs_as_ch_busy(1);
+        status = WriteRegister(ctc);
+        CHECK_WRITE(CH_TIME_CFG, status);
+    }
 
     return NO_ERROR;
 }
 
 mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1) {
     H2mMailboxCsr hmc;
-    unsigned int busy = 0;
-    for (busy = 0; busy < kMaxBusyReads; busy++) {
-        auto status = ReadRegister(&hmc);
-        CHECK_READ(H2M_MAILBOX_CSR, status);
-        if (!hmc.owner()) break;
-        mxsleep(kRegisterBusyWait);
+    BusyPredicate<H2mMailboxCsr> pred = [](H2mMailboxCsr* hmc) { return !hmc->owner(); };
+    auto status = BusyWait(&hmc, pred);
+    if (status < 0) {
+        return status;
     }
-    if (busy == kMaxBusyReads) {
-        std::printf("rt5370 timed out waiting for MCU ready\n");
-        return ERR_TIMED_OUT;
-    }
+
     hmc.set_owner(1);
     hmc.set_cmd_token(token);
     hmc.set_arg0(arg0);
     hmc.set_arg1(arg1);
-    auto status = WriteRegister(hmc);
+    status = WriteRegister(hmc);
     CHECK_WRITE(H2M_MAILBOX_CSR, status);
 
     HostCmd hc;
@@ -808,6 +1139,81 @@ mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uin
     mxsleep(1ms);
 
     return status;
+}
+
+mx_status_t Device::ReadBbp(uint8_t addr, uint8_t* val) {
+    BbpCsrCfg bcc;
+    BusyPredicate<BbpCsrCfg> pred = [](BbpCsrCfg* bcc) { return !bcc->bbp_csr_kick(); };
+
+    auto status = BusyWait(&bcc, pred);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 timed out waiting for BBP\n");
+        }
+        return status;
+    }
+
+    bcc.clear();
+    bcc.set_bbp_addr(addr);
+    bcc.set_bbp_csr_rw(1);
+    bcc.set_bbp_csr_kick(1);
+    bcc.set_bbp_rw_mode(1);
+    status = WriteRegister(bcc);
+    CHECK_WRITE(BBP_CSR_CFG, status);
+
+    status = BusyWait(&bcc, pred);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 timed out waiting for BBP\n");
+            *val = 0xff;
+        }
+        return status;
+    }
+
+    *val = bcc.bbp_data();
+    return NO_ERROR;
+}
+
+mx_status_t Device::WriteBbp(uint8_t addr, uint8_t val) {
+    BbpCsrCfg bcc;
+    BusyPredicate<BbpCsrCfg> pred = [](BbpCsrCfg* bcc) { return !bcc->bbp_csr_kick(); };
+    auto status = BusyWait(&bcc, pred);
+    if (status < 0) {
+        if (status == ERR_TIMED_OUT) {
+            std::printf("rt5370 timed out waiting for BBP\n");
+        }
+        return status;
+    }
+
+    bcc.clear();
+    bcc.set_bbp_data(val);
+    bcc.set_bbp_addr(addr);
+    bcc.set_bbp_csr_rw(0);
+    bcc.set_bbp_csr_kick(1);
+    bcc.set_bbp_rw_mode(1);
+    status = WriteRegister(bcc);
+    CHECK_WRITE(BBP_CSR_CFG, status);
+    return status;
+}
+
+mx_status_t Device::WaitForBbp() {
+    H2mBbpAgent hba;
+    auto status = WriteRegister(hba);
+    CHECK_WRITE(H2M_BBP_AGENT, status);
+
+    H2mMailboxCsr hmc;
+    status = WriteRegister(hmc);
+    CHECK_WRITE(H2M_MAILBOX_CSR, status);
+    mxsleep(1ms);
+
+    uint8_t val;
+    for (unsigned int i = 0; i < kMaxBusyReads; i++) {
+        ReadBbp(0, &val);
+        if ((val != 0xff) && (val != 0x00)) return NO_ERROR;
+        mxsleep(kDefaultBusyWait);
+    }
+    std::printf("rt5370 timed out waiting for BBP ready\n");
+    return ERR_TIMED_OUT;
 }
 
 mx_status_t Device::DisableWpdma() {
@@ -845,18 +1251,24 @@ mx_status_t Device::DetectAutoRun(bool* autorun) {
 }
 
 mx_status_t Device::WaitForMacCsr() {
-    unsigned int busy = 0;
     AsicVerId avi;
+    BusyPredicate<AsicVerId> pred = [](AsicVerId* avi) { return avi->val() && avi->val() != ~0u; };
+    return BusyWait(&avi, pred, 1ms);
+}
+
+template <typename R>
+mx_status_t Device::BusyWait(R* reg, BusyPredicate<R> pred, std::chrono::microseconds delay) {
+    mx_status_t status;
+    unsigned int busy;
     for (busy = 0; busy < kMaxBusyReads; busy++) {
-        auto status = ReadRegister(&avi);
-        CHECK_READ(MAC_CSR0, status);
-        if (avi.val() && avi.val() != ~0u) break;
-        mxsleep(1ms);
+        status = ReadRegister(reg);
+        if (status < 0) return status;
+        if (pred(reg)) break;
+        mxsleep(delay);
     }
     if (busy == kMaxBusyReads) {
         return ERR_TIMED_OUT;
     }
-
     return NO_ERROR;
 }
 

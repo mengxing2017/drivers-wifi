@@ -9,8 +9,10 @@
 #include <ddk/iotxn.h>
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <mutex>
 #include <vector>
 
@@ -46,9 +48,19 @@ class Device {
 
     mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
 
+    mx_status_t ReadBbp(uint8_t addr, uint8_t* val);
+    mx_status_t WriteBbp(uint8_t addr, uint8_t val);
+    mx_status_t WaitForBbp();
+
     mx_status_t DetectAutoRun(bool* autorun);
     mx_status_t DisableWpdma();
     mx_status_t WaitForMacCsr();
+
+    template <typename R>
+    using BusyPredicate = std::function<bool(R* r)>;
+    template <typename R>
+    mx_status_t BusyWait(R* reg, BusyPredicate<R> pred,
+            std::chrono::microseconds delay = kDefaultBusyWait);
 
     void HandleRxComplete(iotxn_t* request);
     void HandleTxComplete(iotxn_t* request);
@@ -84,6 +96,8 @@ class Device {
 
     constexpr static size_t kEepromSize = 0x0100;
     std::array<uint16_t, kEepromSize> eeprom_ = {};
+
+    constexpr static std::chrono::microseconds kDefaultBusyWait = std::chrono::microseconds(100);
 
     uint16_t rt_type_ = 0;
     uint16_t rt_rev_ = 0;
