@@ -19,6 +19,8 @@
 namespace rt5370 {
 
 template <uint16_t A> class Register;
+template <uint8_t A> class BbpRegister;
+template<uint16_t A> class EepromField;
 
 class Device {
   public:
@@ -41,15 +43,20 @@ class Device {
     template <uint16_t A> mx_status_t WriteRegister(const Register<A>& reg);
 
     mx_status_t ReadEeprom();
+    template <uint16_t A> mx_status_t ReadEepromField(EepromField<A>* field);
+    template <uint16_t A> mx_status_t WriteEepromField(const EepromField<A>& field);
     mx_status_t ValidateEeprom();
     mx_status_t LoadFirmware();
     mx_status_t EnableRadio();
     mx_status_t InitRegisters();
+    mx_status_t InitBbp();
 
     mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
 
     mx_status_t ReadBbp(uint8_t addr, uint8_t* val);
+    template <uint8_t A> mx_status_t ReadBbp(BbpRegister<A>* reg);
     mx_status_t WriteBbp(uint8_t addr, uint8_t val);
+    template <uint8_t A> mx_status_t WriteBbp(const BbpRegister<A>& reg);
     mx_status_t WaitForBbp();
 
     mx_status_t DetectAutoRun(bool* autorun);

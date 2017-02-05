@@ -43,29 +43,6 @@ constexpr char kFirmwareFile[] = "rt2870.bin";
 
 constexpr int kMaxBusyReads = 20;
 
-constexpr uint32_t get_bits(uint8_t offset, uint8_t len, uint32_t bitmask) {
-    auto mask = ((1 << len) - 1) << offset;
-    return (bitmask & mask) >> offset;
-}
-
-constexpr uint32_t get_bit(uint8_t offset, uint32_t bitmask) {
-    return get_bits(offset, 1, bitmask);
-}
-
-constexpr uint32_t set_bits(uint8_t offset, uint8_t len, uint32_t orig, uint32_t value) {
-    auto mask = ((1 << len) - 1) << offset;
-    uint32_t ret = orig & ~mask;
-    return ret | ((value << offset) & mask);
-}
-
-//constexpr uint32_t set_bit(uint8_t offset, uint32_t orig) {
-//    return set_bits(offset, 1, orig, 1);
-//}
-//
-//constexpr uint32_t clear_bit(uint8_t offset, uint32_t orig) {
-//    return set_bits(offset, 1, orig, 0);
-//}
-
 // The <cstdlib> overloads confuse the compiler for <cstdint> types.
 template <typename T>
 constexpr T abs(T t) {
@@ -142,13 +119,15 @@ mx_status_t Device::Bind() {
 
     // TODO: default antenna configs
 
-    auto conf1 = eeprom_[EEPROM_NIC_CONF1];
-    std::printf("rt5370 NIC CONF1=%#x\n", conf1);
-    std::printf("rt5370 has HW radio? %s\n", get_bit(EEPROM_NIC_CONF1_HW_RADIO, conf1) ? "Y" : "N");
-    std::printf("rt5370 has BT coexist? %s\n", get_bit(EEPROM_NIC_CONF1_BT_COEXIST, conf1) ? "Y" : "N");
+    EepromNicConf1 enc1;
+    ReadEepromField(&enc1);
+    std::printf("rt5370 NIC CONF1=%#x\n", enc1.val());
+    std::printf("rt5370 has HW radio? %s\n", enc1.hw_radio() ? "Y" : "N");
+    std::printf("rt5370 has BT coexist? %s\n", enc1.bt_coexist() ? "Y" : "N");
 
-    auto freq = eeprom_[EEPROM_FREQ];
-    std::printf("rt5370 freq offset=%#x\n", get_bits(EEPROM_FREQ_OFFSET, EEPROM_FREQ_WIDTH, freq));
+    EepromFreq ef;
+    ReadEepromField(&ef);
+    std::printf("rt5370 freq offset=%#x\n", ef.offset());
 
     // TODO: rfkill switch GPIO
 
@@ -289,53 +268,71 @@ mx_status_t Device::ReadEeprom() {
     return NO_ERROR;
 }
 
+template <uint16_t A> mx_status_t Device::ReadEepromField(EepromField<A>* field) {
+    if (field->addr() > kEepromSize) return ERR_INVALID_ARGS;
+    field->set_val(eeprom_[field->addr()]);
+    return NO_ERROR;
+}
+
+template <uint16_t A> mx_status_t Device::WriteEepromField(const EepromField<A>& field) {
+    if (field.addr() > kEepromSize) return ERR_INVALID_ARGS;
+    eeprom_[field.addr()] = field.val();
+    return NO_ERROR;
+}
+
 mx_status_t Device::ValidateEeprom() {
     auto mac_addr = reinterpret_cast<uint8_t*>(eeprom_.data() + EEPROM_MAC_ADDR_0);
     // TODO: validate mac address
     std::printf("rt5370 MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
             mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
 
-    auto data = eeprom_[EEPROM_NIC_CONF0];
-    if (data == 0xffff || data == 0x2860 || data == 0x2872) {
+    EepromField<EEPROM_NIC_CONF0> enc0;
+    ReadEepromField(&enc0);
+    if (enc0.val() == 0xffff || enc0.val() == 0x2860 || enc0.val() == 0x2872) {
         // These values need some eeprom patching; not supported yet.
-        std::printf("unsupported value for EEPROM_NIC_CONF0=%#x\n", data);
+        std::printf("unsupported value for EEPROM_NIC_CONF0=%#x\n", enc0.val());
         return ERR_NOT_SUPPORTED;
     }
 
-    data = eeprom_[EEPROM_NIC_CONF1];
-    if (data == 0xffff) {
-        std::printf("unsupported value for EEPROM_NIC_CONF1=%#x\n", data);
+    EepromNicConf1 enc1;
+    ReadEepromField(&enc1);
+    if (enc1.val() == 0xffff) {
+        std::printf("unsupported value for EEPROM_NIC_CONF1=%#x\n", enc1.val());
         return ERR_NOT_SUPPORTED;
     }
 
-    data = eeprom_[EEPROM_FREQ];
-    if ((data & 0x00ff) == 0x00ff) {
-        data = set_bits(EEPROM_FREQ_OFFSET, EEPROM_FREQ_WIDTH, data, 0);
-        eeprom_[EEPROM_FREQ] = data;
-        std::printf("rt5370 Freq: %#x\n", data);
+    EepromFreq ef;
+    ReadEepromField(&ef);
+    if (ef.offset() == 0x00ff) {
+        ef.set_offset(0);
+        WriteEepromField(ef);
+        std::printf("rt5370 Freq: %#x\n", ef.val());
     }
     // TODO: check/set LED mode
 
-    auto default_lna_gain = get_bits(EEPROM_LNA_A0_OFFSET, EEPROM_LNA_A0_WIDTH, eeprom_[EEPROM_LNA]);
+    EepromLna el;
+    ReadEepromField(&el);
+    auto default_lna_gain = el.a0();
 
-    data = eeprom_[EEPROM_RSSI_BG];
-    if (abs(get_bits(EEPROM_RSSI_BG_0_OFFSET, EEPROM_RSSI_BG_0_WIDTH, data)) > 10) {
-        data = set_bits(EEPROM_RSSI_BG_0_OFFSET, EEPROM_RSSI_BG_0_WIDTH, data, 0);
+    EepromRssiBg erbg;
+    ReadEepromField(&erbg);
+    if (abs(erbg.offset0()) > 10) {
+        erbg.set_offset0(0);
     }
-    if (abs(get_bits(EEPROM_RSSI_BG_1_OFFSET, EEPROM_RSSI_BG_1_WIDTH, data)) > 10) {
-        data = set_bits(EEPROM_RSSI_BG_1_OFFSET, EEPROM_RSSI_BG_1_WIDTH, data, 0);
+    if (abs(erbg.offset1()) > 10) {
+        erbg.set_offset1(0);
     }
-    eeprom_[EEPROM_RSSI_BG] = data;
+    WriteEepromField(erbg);
 
-    data = eeprom_[EEPROM_RSSI_BG2];
-    if (abs(get_bits(EEPROM_RSSI_BG2_OFFSET, EEPROM_RSSI_BG2_WIDTH, data)) > 10) {
-        data = set_bits(EEPROM_RSSI_BG2_OFFSET, EEPROM_RSSI_BG2_WIDTH, data, 0);
+    EepromRssiBg2 erbg2;
+    ReadEepromField(&erbg2);
+    if (abs(erbg2.offset2()) > 10) {
+        erbg2.set_offset2(0);
     }
-    auto bg2_lna_a1 = get_bits(EEPROM_RSSI_BG2_LNA_A1_OFFSET, EEPROM_RSSI_BG2_LNA_A1_WIDTH, data);
-    if (bg2_lna_a1 == 0x00 || bg2_lna_a1 == 0xff) {
-        data = set_bits(EEPROM_RSSI_BG2_LNA_A1_OFFSET, EEPROM_RSSI_BG2_LNA_A1_WIDTH, data, default_lna_gain);
+    if (erbg2.lna_a1() == 0x00 || erbg2.lna_a1() == 0xff) {
+        erbg2.set_lna_a1(default_lna_gain);
     }
-    eeprom_[EEPROM_RSSI_BG2] = data;
+    WriteEepromField(erbg2);
 
     // TODO: check and set RSSI for A
 
@@ -1117,6 +1114,61 @@ mx_status_t Device::InitRegisters() {
     return NO_ERROR;
 }
 
+mx_status_t Device::InitBbp() {
+    std::printf("rt5370 %s\n", __func__);
+
+    Bbp4 reg;
+    auto status = ReadBbp(&reg);
+    CHECK_READ(BBP4, status);
+    reg.set_mac_if_ctrl(1);
+    status = WriteBbp(reg);
+    CHECK_WRITE(BBP4, status);
+
+    WriteBbp(BbpRegister<31>(0x08));
+
+    WriteBbp(BbpRegister<65>(0x2c));
+    WriteBbp(BbpRegister<66>(0x38));
+
+    WriteBbp(BbpRegister<68>(0x0b));
+
+    WriteBbp(BbpRegister<69>(0x12));
+    WriteBbp(BbpRegister<73>(0x13));
+    WriteBbp(BbpRegister<75>(0x46));
+    WriteBbp(BbpRegister<76>(0x28));
+
+    WriteBbp(BbpRegister<77>(0x59));
+
+    WriteBbp(BbpRegister<70>(0x0a));
+
+    WriteBbp(BbpRegister<79>(0x13));
+    WriteBbp(BbpRegister<80>(0x05));
+    WriteBbp(BbpRegister<81>(0x33));
+
+    WriteBbp(BbpRegister<82>(0x62));
+
+    WriteBbp(BbpRegister<83>(0x7a));
+
+    WriteBbp(BbpRegister<84>(0x9a));
+
+    WriteBbp(BbpRegister<86>(0x38));
+
+    WriteBbp(BbpRegister<91>(0x04));
+
+    WriteBbp(BbpRegister<92>(0x02));
+
+    WriteBbp(BbpRegister<103>(0xc0));
+
+    WriteBbp(BbpRegister<104>(0x92));
+
+    WriteBbp(BbpRegister<105>(0x3c));
+
+    WriteBbp(BbpRegister<106>(0x03));
+
+    WriteBbp(BbpRegister<128>(0x12));
+
+    return NO_ERROR;
+}
+
 mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1) {
     H2mMailboxCsr hmc;
     BusyPredicate<H2mMailboxCsr> pred = [](H2mMailboxCsr* hmc) { return !hmc->owner(); };
@@ -1174,6 +1226,10 @@ mx_status_t Device::ReadBbp(uint8_t addr, uint8_t* val) {
     return NO_ERROR;
 }
 
+template <uint8_t A> mx_status_t Device::ReadBbp(BbpRegister<A>* reg) {
+    return ReadBbp(reg->addr(), reg->mut_val());
+}
+
 mx_status_t Device::WriteBbp(uint8_t addr, uint8_t val) {
     BbpCsrCfg bcc;
     BusyPredicate<BbpCsrCfg> pred = [](BbpCsrCfg* bcc) { return !bcc->bbp_csr_kick(); };
@@ -1194,6 +1250,10 @@ mx_status_t Device::WriteBbp(uint8_t addr, uint8_t val) {
     status = WriteRegister(bcc);
     CHECK_WRITE(BBP_CSR_CFG, status);
     return status;
+}
+
+template <uint8_t A> mx_status_t Device::WriteBbp(const BbpRegister<A>& reg) {
+    return WriteBbp(reg.addr(), reg.val());
 }
 
 mx_status_t Device::WaitForBbp() {
