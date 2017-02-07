@@ -30,6 +30,8 @@ enum UsbModeOffset : uint8_t {
 };
 
 constexpr uint16_t RT5390 = 0x5390;
+constexpr uint16_t REV_RT5390F = 0x0502;
+constexpr uint16_t REV_RT5390R = 0x1502;
 constexpr uint16_t FW_IMAGE_BASE = 0x3000;
 
 // Registers
@@ -106,6 +108,14 @@ class PbfCfg : public Register<0x0408> {
     BIT_FIELD(tx2q_num, 16, 5);
     BIT_FIELD(tx1q_num, 21, 3);
     BIT_FIELD(null2_sel, 24, 3);
+};
+
+class RfCsrCfg : public Register<0x0500> {
+  public:
+    BIT_FIELD(rf_csr_data, 0, 8);
+    BIT_FIELD(rf_csr_addr, 8, 6);
+    BIT_FIELD(rf_csr_rw, 16, 1);
+    BIT_FIELD(rf_csr_kick, 17, 1);
 };
 
 class EfuseCtrl : public Register<0x0580> {
@@ -470,10 +480,38 @@ constexpr uint16_t EEPROM_VERSION = 0x0001;
 constexpr uint16_t EEPROM_MAC_ADDR_0 = 0x0002;
 constexpr uint16_t EEPROM_MAC_ADDR_1 = 0x0003;
 constexpr uint16_t EEPROM_MAC_ADDR_2 = 0x0004;
-constexpr uint16_t EEPROM_NIC_CONF0 = 0x001a;
 constexpr uint16_t EEPROM_NIC_CONF2 = 0x0021;
 constexpr uint16_t EEPROM_RSSI_A = 0x0025;
 constexpr uint16_t EEPROM_RSSI_A2 = 0x0026;
+constexpr uint16_t EEPROM_BBP_START = 0x0078;
+
+constexpr size_t EEPROM_BBP_SIZE = 16;
+
+class EepromNicConf0 : public EepromField<0x001a> {
+  public:
+    BIT_FIELD(rxpath, 0, 4);
+    BIT_FIELD(txpath, 4, 4);
+    BIT_FIELD(rf_type, 8, 4);
+};
+
+class EepromNicConf1 : public EepromField<0x001b> {
+  public:
+    BIT_FIELD(hw_radio, 0, 1);
+    BIT_FIELD(external_tx_alc, 1, 1);
+    BIT_FIELD(external_lna_2g, 2, 1);
+    BIT_FIELD(external_lna_5g, 3, 1);
+    BIT_FIELD(cardbus_accel, 4, 1);
+    BIT_FIELD(bw40m_sb_2g, 5, 1);
+    BIT_FIELD(bw40m_sb_5g, 6, 1);
+    BIT_FIELD(wps_pbc, 7, 1);
+    BIT_FIELD(bw40m_2g, 8, 1);
+    BIT_FIELD(bw40m_5g, 9, 1);
+    BIT_FIELD(broadband_ext_lna, 10, 1);
+    BIT_FIELD(ant_diversity, 11, 2);
+    BIT_FIELD(internal_tx_alc, 13, 1);
+    BIT_FIELD(bt_coexist, 14, 1);
+    BIT_FIELD(dac_test, 15, 1);
+};
 
 class EepromFreq : public EepromField<0x001d> {
   public:
@@ -496,25 +534,6 @@ class EepromRssiBg2 : public EepromField<0x0024> {
   public:
     BIT_FIELD(offset2, 0, 8);
     BIT_FIELD(lna_a1, 8, 8);
-};
-
-class EepromNicConf1 : public EepromField<0x001b> {
-  public:
-    BIT_FIELD(hw_radio, 0, 1);
-    BIT_FIELD(external_tx_alc, 1, 1);
-    BIT_FIELD(external_lna_2g, 2, 1);
-    BIT_FIELD(external_lna_5g, 3, 1);
-    BIT_FIELD(cardbus_accel, 4, 1);
-    BIT_FIELD(bw40m_sb_2g, 5, 1);
-    BIT_FIELD(bw40m_sb_5g, 6, 1);
-    BIT_FIELD(wps_pbc, 7, 1);
-    BIT_FIELD(bw40m_2g, 8, 1);
-    BIT_FIELD(bw40m_5g, 9, 1);
-    BIT_FIELD(broadband_ext_lna, 10, 1);
-    BIT_FIELD(ant_diversity, 11, 2);
-    BIT_FIELD(internal_tx_alc, 13, 1);
-    BIT_FIELD(bt_coexist, 14, 1);
-    BIT_FIELD(dac_test, 15, 1);
 };
 
 // Host to MCU communication
@@ -545,11 +564,65 @@ constexpr uint8_t MCU_WAKEUP = 0x31;
 
 // BBP registers
 
+class Bbp1 : public BbpRegister<1> {
+  public:
+    BIT_FIELD(tx_power_ctrl, 0, 2);
+    BIT_FIELD(tx_antenna, 3, 2);
+};
+
+class Bbp3 : public BbpRegister<3> {
+  public:
+    BIT_FIELD(rx_adc, 0, 2);
+    BIT_FIELD(rx_antenna, 3, 2);
+    BIT_FIELD(ht40_minus, 5, 1);
+    BIT_FIELD(adc_mode_switch, 6, 1);
+    BIT_FIELD(adc_init_mode, 7, 1);
+};
+
 class Bbp4 : public BbpRegister<4> {
   public:
     BIT_FIELD(tx_bf, 0, 1);
     BIT_FIELD(bandwidth, 3, 2);
     BIT_FIELD(mac_if_ctrl, 6, 1);
+};
+
+class Bbp138 : public BbpRegister<138> {
+  public:
+    BIT_FIELD(rx_adc1, 1, 1);
+    BIT_FIELD(rx_adc2, 2, 1);
+    BIT_FIELD(tx_dac1, 5, 1);
+    BIT_FIELD(tx_dac2, 6, 1);
+};
+
+class Bbp152 : public BbpRegister<152> {
+  public:
+    BIT_FIELD(rx_default_ant, 7, 1);
+};
+
+// RFCSR registers
+
+class Rfcsr2 : public RfcsrRegister<2> {
+  public:
+    BIT_FIELD(rescal_en, 7, 1);
+};
+
+class Rfcsr30 : public RfcsrRegister<30> {
+  public:
+    BIT_FIELD(tx_h20m, 1, 1);
+    BIT_FIELD(rx_h20m, 2, 1);
+    BIT_FIELD(rx_vcm, 3, 2);
+    BIT_FIELD(rf_calibration, 7, 1);
+};
+
+class Rfcsr38 : public RfcsrRegister<38> {
+  public:
+    BIT_FIELD(rx_lo1_en, 5, 1);
+};
+
+class Rfcsr39 : public RfcsrRegister<39> {
+  public:
+    BIT_FIELD(rx_div, 6, 1);
+    BIT_FIELD(rx_lo2_en, 7, 1);
 };
 
 }  // namespace rt5370

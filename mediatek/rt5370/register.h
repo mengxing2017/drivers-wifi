@@ -6,55 +6,61 @@
 
 namespace rt5370 {
 
-template<typename T>
+template<typename AddrType, typename ValueType, AddrType A>
 class BitField {
   public:
-    constexpr explicit BitField(T val) : val_(val) {}
+    static constexpr AddrType addr() { return A; }
+
+    constexpr explicit BitField(ValueType val) : val_(val) {}
     constexpr BitField() = default;
 
     void clear() { val_ = 0; }
-    void set_val(T val) { val_ = val; }
-    T* mut_val() { return &val_; }
+    void set_val(ValueType val) { val_ = val; }
+    ValueType* mut_val() { return &val_; }
 
-    constexpr T val() const { return val_; }
+    constexpr ValueType val() const { return val_; }
 
-    constexpr T get_bits(unsigned int offset, size_t len) const {
+    constexpr ValueType get_bits(unsigned int offset, size_t len) const {
         return (val_ & mask(offset, len)) >> offset;
     }
 
-    constexpr void set_bits(unsigned int offset, size_t len, T value) {
-        T cleared = val_ & ~mask(offset, len);
+    constexpr void set_bits(unsigned int offset, size_t len, ValueType value) {
+        ValueType cleared = val_ & ~mask(offset, len);
         val_ = cleared | ((value << offset) & mask(offset, len));
     }
 
   private:
-    constexpr static T mask(unsigned int offset, size_t len) {
+    constexpr static ValueType mask(unsigned int offset, size_t len) {
         return ((1 << len) - 1) << offset;
     }
 
-    T val_ = 0;
+    ValueType val_ = 0;
 };
 
 template<uint16_t A>
-class Register : public BitField<uint32_t> {
+class Register : public BitField<uint16_t, uint32_t, A> {
   public:
-    static constexpr uint16_t addr() { return A; }
     constexpr Register() = default;
 };
 
 template<uint16_t A>
-class EepromField : public BitField<uint16_t> {
+class EepromField : public BitField<uint16_t, uint16_t, A> {
   public:
-    static constexpr uint16_t addr() { return A; }
     constexpr EepromField() = default;
 };
 
 template<uint8_t A>
-class BbpRegister : public BitField<uint8_t> {
+class BbpRegister : public BitField<uint8_t, uint8_t, A> {
   public:
-    static constexpr uint8_t addr() { return A; }
-    constexpr explicit BbpRegister(uint8_t val) : BitField(val) {}
+    constexpr explicit BbpRegister(uint8_t val) : BitField<uint8_t, uint8_t, A>(val) {}
     constexpr BbpRegister() = default;
+};
+
+template<uint8_t A>
+class RfcsrRegister : public BitField<uint8_t, uint8_t, A> {
+  public:
+    constexpr explicit RfcsrRegister(uint8_t val) : BitField<uint8_t, uint8_t, A>(val) {}
+    constexpr RfcsrRegister() = default;
 };
 
 #define BIT_FIELD(name, offset, len) \

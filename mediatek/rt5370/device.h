@@ -20,7 +20,8 @@ namespace rt5370 {
 
 template <uint16_t A> class Register;
 template <uint8_t A> class BbpRegister;
-template<uint16_t A> class EepromField;
+template <uint8_t A> class RfcsrRegister;
+template <uint16_t A> class EepromField;
 
 class Device {
   public:
@@ -43,15 +44,10 @@ class Device {
     template <uint16_t A> mx_status_t WriteRegister(const Register<A>& reg);
 
     mx_status_t ReadEeprom();
+    mx_status_t ReadEepromField(uint16_t addr, uint16_t* value);
     template <uint16_t A> mx_status_t ReadEepromField(EepromField<A>* field);
     template <uint16_t A> mx_status_t WriteEepromField(const EepromField<A>& field);
     mx_status_t ValidateEeprom();
-    mx_status_t LoadFirmware();
-    mx_status_t EnableRadio();
-    mx_status_t InitRegisters();
-    mx_status_t InitBbp();
-
-    mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
 
     mx_status_t ReadBbp(uint8_t addr, uint8_t* val);
     template <uint8_t A> mx_status_t ReadBbp(BbpRegister<A>* reg);
@@ -59,14 +55,27 @@ class Device {
     template <uint8_t A> mx_status_t WriteBbp(const BbpRegister<A>& reg);
     mx_status_t WaitForBbp();
 
+    mx_status_t ReadRfcsr(uint8_t addr, uint8_t* val);
+    template <uint8_t A> mx_status_t ReadRfcsr(RfcsrRegister<A>* reg);
+    mx_status_t WriteRfcsr(uint8_t addr, uint8_t val);
+    template <uint8_t A> mx_status_t WriteRfcsr(const RfcsrRegister<A>& reg);
+
+    mx_status_t LoadFirmware();
+    mx_status_t EnableRadio();
+    mx_status_t InitRegisters();
+    mx_status_t InitBbp();
+    mx_status_t InitRfcsr();
+
+    mx_status_t McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uint8_t arg1);
+
     mx_status_t DetectAutoRun(bool* autorun);
     mx_status_t DisableWpdma();
     mx_status_t WaitForMacCsr();
+    mx_status_t NormalModeSetup();
+    mx_status_t StartQueues();
 
     template <typename R>
-    using BusyPredicate = std::function<bool(R* r)>;
-    template <typename R>
-    mx_status_t BusyWait(R* reg, BusyPredicate<R> pred,
+    mx_status_t BusyWait(R* reg, std::function<bool()> pred,
             std::chrono::microseconds delay = kDefaultBusyWait);
 
     void HandleRxComplete(iotxn_t* request);
