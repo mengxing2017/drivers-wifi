@@ -35,7 +35,7 @@ mx_status_t mxsleep(std::chrono::duration<Rep, Period> duration) {
     return mx::nanosleep(std::chrono::nanoseconds(duration).count());
 }
 
-constexpr size_t kReadReqCount = 8;
+constexpr size_t kReadReqCount = 128;
 constexpr size_t kReadBufSize = 4096;
 constexpr size_t kWriteReqCount = 4;
 constexpr size_t kWriteBufSize = 4096;  // todo: use endpt max size
@@ -50,6 +50,11 @@ constexpr T abs(T t) {
     return t < 0 ? -t : t;
 }
 
+template <typename T>
+constexpr T clamp(T val, T min, T max) {
+    return (val > max ? max :
+            (val < min ? min : val));
+}
 }  // namespace
 
 namespace rt5370 {
@@ -63,6 +68,23 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
     rx_endpt_(bulk_in),
     tx_endpts_(std::move(bulk_out)) {
     std::printf("rt5370::Device drv=%p dev=%p bulk_in=%u\n", driver_, usb_device_, rx_endpt_);
+
+    channels_.insert({
+            {1, Channel(1, 0, 241, 2, 2)},
+            {2, Channel(2, 1, 241, 2, 7)},
+            {3, Channel(3, 2, 242, 2, 2)},
+            {4, Channel(4, 3, 242, 2, 7)},
+            {5, Channel(5, 4, 243, 2, 2)},
+            {6, Channel(6, 5, 243, 2, 7)},
+            {7, Channel(7, 6, 244, 2, 2)},
+            {8, Channel(8, 7, 244, 2, 7)},
+            {9, Channel(9, 8, 245, 2, 2)},
+            {10, Channel(10, 9, 245, 2, 7)},
+            {11, Channel(11, 10, 246, 2, 2)},
+            {12, Channel(12, 11, 246, 2, 7)},
+            {13, Channel(13, 12, 247, 2, 2)},
+            {14, Channel(14, 13, 248, 2, 4)},
+    });
 }
 
 Device::~Device() {
@@ -110,6 +132,15 @@ mx_status_t Device::Bind() {
     if (status != NO_ERROR) {
         std::printf("rt5370 failed to validate eeprom\n");
         return status;
+    }
+
+    auto default_power1 = reinterpret_cast<uint8_t*>(&eeprom_[EEPROM_TXPOWER_BG1]);
+    auto default_power2 = reinterpret_cast<uint8_t*>(&eeprom_[EEPROM_TXPOWER_BG2]);
+    for (auto& entry : channels_) {
+        entry.second.default_power1 =
+            clamp(static_cast<uint16_t>(default_power1[entry.second.hw_index]), kMinTxPower, kMaxTxPower);
+        entry.second.default_power2 =
+            clamp(static_cast<uint16_t>(default_power2[entry.second.hw_index]), kMinTxPower, kMaxTxPower);
     }
 
     if (rt_type_ == RT5390) {
@@ -173,6 +204,33 @@ mx_status_t Device::Bind() {
         std::printf("rt5370 could not enable radio\n");
         return status;
     }
+
+    status = StartQueues();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not start queues\n");
+        return status;
+    }
+
+    status = SetupInterface();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not setup interface\n");
+        return status;
+    }
+
+    status = StopRxQueue();
+    if (status != NO_ERROR ) {
+        std::printf("rt5370 could not stop rx queue\n");
+        return status;
+    }
+    auto chan = channels_.find(11);
+    assert(chan != channels_.end());
+    status = ConfigureChannel(chan->second);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not configure channel 11\n");
+        return status;
+    }
+
+    // configure antenna
 
     status = StartQueues();
     if (status != NO_ERROR) {
@@ -299,10 +357,10 @@ template <uint16_t A> mx_status_t Device::WriteEepromField(const EepromField<A>&
 }
 
 mx_status_t Device::ValidateEeprom() {
-    auto mac_addr = reinterpret_cast<uint8_t*>(eeprom_.data() + EEPROM_MAC_ADDR_0);
+    memcpy(mac_addr_, eeprom_.data() + EEPROM_MAC_ADDR_0, sizeof(mac_addr_));
     // TODO: validate mac address
     std::printf("rt5370 MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-            mac_addr[0], mac_addr[1], mac_addr[2], mac_addr[3], mac_addr[4], mac_addr[5]);
+            mac_addr_[0], mac_addr_[1], mac_addr_[2], mac_addr_[3], mac_addr_[4], mac_addr_[5]);
 
     EepromNicConf0 enc0;
     ReadEepromField(&enc0);
@@ -611,7 +669,7 @@ mx_status_t Device::EnableRadio() {
     CHECK_READ(WPDMA_GLO_CFG, status);
     wgc.set_tx_dma_en(1);
     wgc.set_rx_dma_en(1);
-    wgc.set_wpdma_bt_size(2);
+    //wgc.set_wpdma_bt_size(2);  // ??? where did I get this?
     wgc.set_tx_wb_ddone(1);
     status = WriteRegister(wgc);
     CHECK_WRITE(WPDMA_GLO_CFG, status);
@@ -701,41 +759,10 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(btc);
     CHECK_WRITE(BCN_TIME_CFG, status);
 
-    RxFiltrCfg rfc;
-    status = ReadRegister(&rfc);
-    CHECK_READ(RX_FILTR_CFG, status);
-    std::printf("rt5370 rx filter: 0x%04x\n", rfc.val());
-    rfc.set_drop_crc_err(0);
-    rfc.set_drop_phy_err(0);
-    rfc.set_drop_uc_nome(1);
-    rfc.set_drop_ver_err(1);
-    rfc.set_drop_dupl(1);
-    rfc.set_drop_cfack(0);
-    rfc.set_drop_cfend(0);
-    rfc.set_drop_ack(0);
-    rfc.set_drop_cts(0);
-    rfc.set_drop_rts(0);
-    rfc.set_drop_pspoll(0);
-    rfc.set_drop_bar(0);
-    rfc.set_drop_ctrl_rsv(0);
-    /*
-    rfc.set_drop_crc_err(1);
-    rfc.set_drop_phy_err(1);
-    rfc.set_drop_uc_nome(1);
-    rfc.set_drop_ver_err(1);
-    rfc.set_drop_dupl(1);
-    rfc.set_drop_cfack(1);
-    rfc.set_drop_cfend(1);
-    rfc.set_drop_ack(1);
-    rfc.set_drop_cts(1);
-    rfc.set_drop_rts(1);
-    rfc.set_drop_pspoll(1);
-    rfc.set_drop_bar(1);
-    rfc.set_drop_ctrl_rsv(1);
-    */
-    std::printf("rt5370 rx filter: 0x%04x\n", rfc.val());
-    status = WriteRegister(rfc);
-    CHECK_WRITE(RX_FILTR_CFG, status);
+    status = SetRxFilter(false);
+    if (status != NO_ERROR) {
+        return status;
+    }
 
     BkoffSlotCfg bsc;
     status = ReadRegister(&bsc);
@@ -1517,6 +1544,47 @@ mx_status_t Device::WaitForMacCsr() {
     return BusyWait(&avi, [&avi]() { return avi.val() && avi.val() != ~0u; }, 1ms);
 }
 
+mx_status_t Device::SetRxFilter(bool allow) {
+    RxFiltrCfg rfc;
+    auto status = ReadRegister(&rfc);
+    CHECK_READ(RX_FILTR_CFG, status);
+    std::printf("rt5370 rx filter before: 0x%04x\n", rfc.val());
+    if (allow) {
+        rfc.set_drop_crc_err(0);
+        rfc.set_drop_phy_err(0);
+        rfc.set_drop_uc_nome(1);
+        rfc.set_drop_ver_err(1);
+        rfc.set_drop_dupl(1);
+        rfc.set_drop_cfack(0);
+        rfc.set_drop_cfend(0);
+        rfc.set_drop_ack(0);
+        rfc.set_drop_cts(0);
+        rfc.set_drop_rts(0);
+        rfc.set_drop_pspoll(0);
+        rfc.set_drop_bar(0);
+        rfc.set_drop_ctrl_rsv(0);
+    } else {
+        rfc.set_drop_crc_err(1);
+        rfc.set_drop_phy_err(1);
+        rfc.set_drop_uc_nome(1);
+        rfc.set_drop_ver_err(1);
+        rfc.set_drop_dupl(1);
+        rfc.set_drop_cfack(1);
+        rfc.set_drop_cfend(1);
+        rfc.set_drop_ack(1);
+        rfc.set_drop_cts(1);
+        rfc.set_drop_rts(1);
+        rfc.set_drop_pspoll(1);
+        rfc.set_drop_bar(1);
+        rfc.set_drop_ctrl_rsv(1);
+    }
+    std::printf("rt5370 rx filter after:  0x%04x\n", rfc.val());
+    status = WriteRegister(rfc);
+    CHECK_WRITE(RX_FILTR_CFG, status);
+
+    return NO_ERROR;
+}
+
 mx_status_t Device::NormalModeSetup() {
     std::printf("rt5370 NormalModeSetup\n");
 
@@ -1589,6 +1657,195 @@ mx_status_t Device::StartQueues() {
     CHECK_WRITE(BCN_TIME_CFG, status);
 
     // kick the rx queue???
+
+    return NO_ERROR;
+}
+
+mx_status_t Device::StopRxQueue() {
+    MacSysCtrl msc;
+    auto status = ReadRegister(&msc);
+    CHECK_READ(MAC_SYS_CTRL, status);
+    msc.set_mac_rx_en(0);
+    status = WriteRegister(msc);
+    CHECK_WRITE(MAC_SYS_CTRL, status);
+
+    return NO_ERROR;
+}
+
+mx_status_t Device::SetupInterface() {
+    BcnTimeCfg btc;
+    auto status = ReadRegister(&btc);
+    CHECK_READ(BCN_TIME_CFG, status);
+    btc.set_tsf_sync_mode(0);
+    status = WriteRegister(btc);
+    CHECK_WRITE(BCN_TIME_CFG, status);
+
+    TbttSyncCfg tsc;
+    status = ReadRegister(&tsc);
+    CHECK_READ(TBTT_SYNC_CFG, status);
+    tsc.set_tbtt_adjust(16);
+    tsc.set_bcn_exp_win(32);
+    tsc.set_bcn_aifsn(2);
+    tsc.set_bcn_cwmin(4);
+    status = WriteRegister(tsc);
+    CHECK_WRITE(TBTT_SYNC_CFG, status);
+
+    MacAddrDw0 mac0;
+    MacAddrDw1 mac1;
+    mac0.set_mac_addr_0(mac_addr_[0]);
+    mac0.set_mac_addr_1(mac_addr_[1]);
+    mac0.set_mac_addr_2(mac_addr_[2]);
+    mac0.set_mac_addr_3(mac_addr_[3]);
+    mac1.set_mac_addr_4(mac_addr_[4]);
+    mac1.set_mac_addr_5(mac_addr_[5]);
+    mac1.set_unicast_to_me_mask(0xff);
+    status = WriteRegister(mac0);
+    CHECK_WRITE(MAC_ADDR_DW0, status);
+    status = WriteRegister(mac1);
+    CHECK_WRITE(MAC_ADDR_DW1, status);
+
+    return NO_ERROR;
+}
+
+constexpr uint8_t kRfPowerBound = 0x27;
+constexpr uint8_t kFreqOffsetBound = 0x5f;
+
+mx_status_t Device::ConfigureChannel(const Channel& channel) {
+    EepromLna lna;
+    auto status = ReadEepromField(&lna);
+    CHECK_READ(EEPROM_LNA, status);
+    lna_gain_ = lna.bg();
+
+    WriteRfcsr(RfcsrRegister<8>(channel.N));
+    WriteRfcsr(RfcsrRegister<9>(channel.K & 0x0f));
+    Rfcsr11 r11;
+    status = ReadRfcsr(&r11);
+    CHECK_READ(RF11, status);
+    r11.set_r(channel.R);
+    status = WriteRfcsr(r11);
+    CHECK_WRITE(RF11, status);
+
+    Rfcsr49 r49;
+    status = ReadRfcsr(&r49);
+    CHECK_READ(RF49, status);
+    if (channel.default_power1 > kRfPowerBound) {
+        r49.set_tx(kRfPowerBound);
+    } else {
+        r49.set_tx(channel.default_power1);
+    }
+    status = WriteRfcsr(r49);
+    CHECK_WRITE(RF49, status);
+
+    Rfcsr1 r1;
+    status = ReadRfcsr(&r1);
+    CHECK_READ(RF1, status);
+    r1.set_rf_block_en(1);
+    r1.set_pll_pd(1);
+    r1.set_rx0_pd(1);
+    r1.set_tx0_pd(1);
+    status = WriteRfcsr(r1);
+    CHECK_WRITE(RF1, status);
+
+    // adjust freq offset
+    EepromFreq ef;
+    ReadEepromField(&ef);
+    uint8_t freq_offset = ef.offset() > kFreqOffsetBound ? kFreqOffsetBound : ef.offset();
+
+    Rfcsr17 r17;
+    status = ReadRfcsr(&r17);
+    CHECK_READ(RF17, status);
+    uint8_t prev_freq_off = r17.val();
+
+    if (r17.freq_offset() != ef.offset()) {
+        status = McuCommand(MCU_FREQ_OFFSET, 0xff, freq_offset, prev_freq_off);
+        if (status < 0) {
+            std::printf("rt5370 could not set frequency offset\n");
+            return status;
+        }
+    }
+
+    if (channel.channel <= 14) {
+        if (rt_rev_ >= REV_RT5390F) {
+            constexpr static uint8_t r55[] = {
+                0x23, 0x23, 0x23, 0x23, 0x13, 0x13, 0x03, 0x03,
+                0x03, 0x03, 0x03, 0x03, 0x03, 0x03, };
+            constexpr static uint8_t r59[] = {
+                0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07, 0x07,
+                0x07, 0x07, 0x06, 0x05, 0x04, 0x04, };
+            WriteRfcsr(RfcsrRegister<55>(r55[channel.hw_index]));
+            WriteRfcsr(RfcsrRegister<59>(r59[channel.hw_index]));
+        } else {
+            std::printf("rt5370 TODO: write RF59 register\n");
+            return ERR_NOT_SUPPORTED;
+        }
+    }
+
+    Rfcsr30 r30;
+    status = ReadRfcsr(&r30);
+    CHECK_READ(RF30, status);
+    r30.set_tx_h20m(0);
+    r30.set_rx_h20m(0);
+    status = WriteRfcsr(r30);
+    CHECK_WRITE(RF30, status);
+
+    Rfcsr3 r3;
+    status = ReadRfcsr(&r3);
+    CHECK_READ(RF3, status);
+    r3.set_vcocal_en(1);
+    status = WriteRfcsr(r3);
+    CHECK_WRITE(RF3, status);
+
+    WriteBbp(BbpRegister<62>(0x37 - lna_gain_));
+    WriteBbp(BbpRegister<63>(0x37 - lna_gain_));
+    WriteBbp(BbpRegister<64>(0x37 - lna_gain_));
+    WriteBbp(BbpRegister<86>(0x00));
+
+    TxBandCfg tbc;
+    status = ReadRegister(&tbc);
+    CHECK_READ(TX_BAND_CFG, status);
+    tbc.set_tx_band_sel(0);
+    tbc.set_a(0);
+    tbc.set_bg(1);
+    status = WriteRegister(tbc);
+    CHECK_WRITE(TX_BAND_CFG, status);
+
+    TxPinCfg tpc;
+    // TODO: see if we have more than 1 tx or rx chain
+    // TODO: set A values for channels > 14
+    tpc.set_pa_pe_g0_en(1);
+    tpc.set_lna_pe_a0_en(1);
+    tpc.set_lna_pe_g0_en(1);
+    tpc.set_rftr_en(1);
+    tpc.set_trsw_en(1);
+    status = WriteRegister(tpc);
+    CHECK_WRITE(TX_PIN_CFG, status);
+
+    Bbp4 b4;
+    status = ReadBbp(&b4);
+    CHECK_READ(BBP4, status);
+    b4.set_bandwidth(0);
+    status = WriteBbp(b4);
+    CHECK_WRITE(BBP4, status);
+
+    Bbp3 b3;
+    status = ReadBbp(&b3);
+    CHECK_READ(BBP3, status);
+    b3.set_ht40_minus(0);
+    status = WriteBbp(b3);
+    CHECK_WRITE(BBP3, status);
+
+    mxsleep(1ms);
+
+    // Clear channel stats by reading the registers
+    ChIdleSta cis;
+    ChBusySta cbs;
+    ExtChBusySta ecbs;
+    status = ReadRegister(&cis);
+    CHECK_READ(CH_IDLE_STA, status);
+    status = ReadRegister(&cbs);
+    CHECK_READ(CH_BUSY_STA, status);
+    status = ReadRegister(&ecbs);
+    CHECK_READ(EXT_CH_BUSY_STA, status);
 
     return NO_ERROR;
 }

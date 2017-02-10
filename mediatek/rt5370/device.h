@@ -7,6 +7,7 @@
 #include <ddk/device.h>
 #include <ddk/driver.h>
 #include <ddk/iotxn.h>
+#include <ddk/protocol/ethernet.h>
 
 #include <array>
 #include <chrono>
@@ -14,6 +15,7 @@
 #include <cstdint>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
 #include <vector>
 
 namespace rt5370 {
@@ -36,6 +38,22 @@ class Device {
         Scan,
         Associate,
         Disassociate,
+    };
+
+    struct Channel {
+        Channel(int channel, int hw_index, uint32_t N, uint32_t R, uint32_t K) :
+            channel(channel), hw_index(hw_index), N(N), R(R), K(K) {}
+
+        int channel;
+        int hw_index;
+        uint32_t N;
+        uint32_t R;
+        uint32_t K;
+
+        uint16_t max_power = 0;
+        uint16_t default_power1 = 0;
+        uint16_t default_power2 = 0;
+        uint16_t default_power3 = 0;
     };
 
     mx_status_t ReadRegister(uint16_t offset, uint32_t* value);
@@ -71,8 +89,13 @@ class Device {
     mx_status_t DetectAutoRun(bool* autorun);
     mx_status_t DisableWpdma();
     mx_status_t WaitForMacCsr();
+    mx_status_t SetRxFilter(bool allow);
     mx_status_t NormalModeSetup();
     mx_status_t StartQueues();
+    mx_status_t StopRxQueue();
+    mx_status_t SetupInterface();
+
+    mx_status_t ConfigureChannel(const Channel& channel);
 
     template <typename R>
     mx_status_t BusyWait(R* reg, std::function<bool()> pred,
@@ -120,6 +143,10 @@ class Device {
     uint16_t rf_type_ = 0;
 
     bool dead_ = false;
+
+    uint8_t mac_addr_[ETH_MAC_SIZE];
+    std::unordered_map<int, Channel> channels_;
+    uint16_t lna_gain_ = 0;
 
     std::mutex lock_;
     mx_signals_t signals_ = 0;

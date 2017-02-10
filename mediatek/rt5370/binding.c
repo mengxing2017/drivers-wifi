@@ -11,7 +11,7 @@
 
 #include <magenta/types.h>
 
-extern mx_status_t mediatek_rt5370_bind(mx_driver_t* driver, mx_device_t* device);
+extern mx_status_t mediatek_rt5370_bind(mx_driver_t* driver, mx_device_t* device, void** cookie);
 
 mx_driver_t _driver_mediatek_rt5370 = {
     .ops = {

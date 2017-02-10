@@ -34,6 +34,10 @@ constexpr uint16_t REV_RT5390F = 0x0502;
 constexpr uint16_t REV_RT5390R = 0x1502;
 constexpr uint16_t FW_IMAGE_BASE = 0x3000;
 
+// B/G min/max TX power
+constexpr uint16_t kMinTxPower = 0;
+constexpr uint16_t kMaxTxPower = 31;
+
 // Registers
 
 class WpdmaGloCfg : public Register<0x0208> {
@@ -145,6 +149,21 @@ class MacSysCtrl : public Register<0x1004> {
     BIT_FIELD(mac_rx_en, 3, 1);
 };
 
+class MacAddrDw0 : public Register<0x1008> {
+  public:
+    BIT_FIELD(mac_addr_0, 0, 8);
+    BIT_FIELD(mac_addr_1, 8, 8);
+    BIT_FIELD(mac_addr_2, 16, 8);
+    BIT_FIELD(mac_addr_3, 24, 8);
+};
+
+class MacAddrDw1 : public Register<0x100c> {
+  public:
+    BIT_FIELD(mac_addr_4, 0, 8);
+    BIT_FIELD(mac_addr_5, 8, 8);
+    BIT_FIELD(unicast_to_me_mask, 16, 8);
+};
+
 class MaxLenCfg : public Register<0x1018> {
   public:
     BIT_FIELD(max_mpdu_len, 0, 12);
@@ -203,10 +222,33 @@ class BcnTimeCfg : public Register<0x1114> {
     BIT_FIELD(tsf_ins_comp, 24, 8);
 };
 
+class TbttSyncCfg : public Register<0x1118> {
+  public:
+    BIT_FIELD(tbtt_adjust, 0, 8);
+    BIT_FIELD(bcn_exp_win, 8, 8);
+    BIT_FIELD(bcn_aifsn, 16, 4);
+    BIT_FIELD(bcn_cwmin, 20, 4);
+};
+
 class IntTimerCfg : public Register<0x1128> {
   public:
     BIT_FIELD(pre_tbtt_timer, 0, 16);
     BIT_FIELD(gp_timer, 16, 16);
+};
+
+class ChIdleSta : public Register<0x1130> {
+  public:
+    BIT_FIELD(ch_idle_time, 0, 32);
+};
+
+class ChBusySta : public Register<0x1134> {
+  public:
+    BIT_FIELD(ch_busy_time, 0, 32);
+};
+
+class ExtChBusySta : public Register<0x1138> {
+  public:
+    BIT_FIELD(ext_ch_busy_time, 0, 32);
 };
 
 class MacStatusReg : public Register<0x1200> {
@@ -228,6 +270,45 @@ class AutoWakeupCfg : public Register<0x1208> {
     BIT_FIELD(wakeup_lead_time, 0, 8);
     BIT_FIELD(sleep_tbtt_num, 8, 7);
     BIT_FIELD(auto_wakeup_en, 15, 1);
+};
+
+class TxPinCfg : public Register<0x1328> {
+  public:
+    BIT_FIELD(pa_pe_a0_en, 0, 1);
+    BIT_FIELD(pa_pe_g0_en, 1, 1);
+    BIT_FIELD(pa_pe_a1_en, 2, 1);
+    BIT_FIELD(pa_pe_g1_en, 3, 1);
+    BIT_FIELD(pa_pe_a0_pol, 4, 1);
+    BIT_FIELD(pa_pe_g0_pol, 5, 1);
+    BIT_FIELD(pa_pe_a1_pol, 6, 1);
+    BIT_FIELD(pa_pe_g1_pol, 7, 1);
+    BIT_FIELD(lna_pe_a0_en, 8, 1);
+    BIT_FIELD(lna_pe_g0_en, 9, 1);
+    BIT_FIELD(lna_pe_a1_en, 10, 1);
+    BIT_FIELD(lna_pe_g1_en, 11, 1);
+    BIT_FIELD(lna_pe_a0_pol, 12, 1);
+    BIT_FIELD(lna_pe_g0_pol, 13, 1);
+    BIT_FIELD(lna_pe_a1_pol, 14, 1);
+    BIT_FIELD(lna_pe_g1_pol, 15, 1);
+    BIT_FIELD(rftr_en, 16, 1);
+    BIT_FIELD(rftr_pol, 17, 1);
+    BIT_FIELD(trsw_en, 18, 1);
+    BIT_FIELD(trsw_pol, 19, 1);
+    BIT_FIELD(pa_pe_a2_en, 24, 1);
+    BIT_FIELD(pa_pe_g2_en, 25, 1);
+    BIT_FIELD(pa_pe_a2_pol, 26, 1);
+    BIT_FIELD(pa_pe_g2_pol, 27, 1);
+    BIT_FIELD(lna_pe_a2_en, 28, 1);
+    BIT_FIELD(lna_pe_g2_en, 29, 1);
+    BIT_FIELD(lna_pe_a2_pol, 30, 1);
+    BIT_FIELD(lna_pe_g2_pol, 31, 1);
+};
+
+class TxBandCfg : public Register<0x132c> {
+  public:
+    BIT_FIELD(tx_band_sel, 0, 1);
+    BIT_FIELD(a, 1, 1);
+    BIT_FIELD(bg, 2, 1);
 };
 
 class TxSwCfg0 : public Register<0x1330> {
@@ -483,6 +564,8 @@ constexpr uint16_t EEPROM_MAC_ADDR_2 = 0x0004;
 constexpr uint16_t EEPROM_NIC_CONF2 = 0x0021;
 constexpr uint16_t EEPROM_RSSI_A = 0x0025;
 constexpr uint16_t EEPROM_RSSI_A2 = 0x0026;
+constexpr uint16_t EEPROM_TXPOWER_BG1 = 0x0029;
+constexpr uint16_t EEPROM_TXPOWER_BG2 = 0x0030;
 constexpr uint16_t EEPROM_BBP_START = 0x0078;
 
 constexpr size_t EEPROM_BBP_SIZE = 16;
@@ -561,6 +644,7 @@ class H2mIntSrc : public Register<0x7024> {};
 // MCU commands
 constexpr uint8_t MCU_BOOT_SIGNAL = 0x72;
 constexpr uint8_t MCU_WAKEUP = 0x31;
+constexpr uint8_t MCU_FREQ_OFFSET = 0x74;
 
 // BBP registers
 
@@ -601,9 +685,37 @@ class Bbp152 : public BbpRegister<152> {
 
 // RFCSR registers
 
+class Rfcsr1 : public RfcsrRegister<1> {
+  public:
+    BIT_FIELD(rf_block_en, 0, 1);
+    BIT_FIELD(pll_pd, 1, 1);
+    BIT_FIELD(rx0_pd, 2, 1);
+    BIT_FIELD(tx0_pd, 3, 1);
+    BIT_FIELD(rx1_pd, 4, 1);
+    BIT_FIELD(tx1_pd, 5, 1);
+    BIT_FIELD(rx2_pd, 6, 1);
+    BIT_FIELD(tx2_pd, 7, 1);
+};
+
 class Rfcsr2 : public RfcsrRegister<2> {
   public:
     BIT_FIELD(rescal_en, 7, 1);
+};
+
+class Rfcsr3 : public RfcsrRegister<3> {
+  public:
+    BIT_FIELD(vcocal_en, 7, 1);
+};
+
+class Rfcsr11 : public RfcsrRegister<11> {
+  public:
+    BIT_FIELD(r, 0, 2);
+};
+
+class Rfcsr17 : public RfcsrRegister<17> {
+  public:
+    BIT_FIELD(freq_offset, 0, 7);
+    BIT_FIELD(high_bit, 7, 1);
 };
 
 class Rfcsr30 : public RfcsrRegister<30> {
@@ -623,6 +735,12 @@ class Rfcsr39 : public RfcsrRegister<39> {
   public:
     BIT_FIELD(rx_div, 6, 1);
     BIT_FIELD(rx_lo2_en, 7, 1);
+};
+
+class Rfcsr49 : public RfcsrRegister<49> {
+  public:
+    BIT_FIELD(tx, 0, 6);
+    BIT_FIELD(ep, 6, 2);
 };
 
 }  // namespace rt5370

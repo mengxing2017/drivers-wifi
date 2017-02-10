@@ -14,7 +14,7 @@
 
 #include "device.h"
 
-extern "C" mx_status_t mediatek_rt5370_bind(mx_driver_t* driver, mx_device_t* device) {
+extern "C" mx_status_t mediatek_rt5370_bind(mx_driver_t* driver, mx_device_t* device, void** cookie) {
     std::printf("%s\n", __func__);
 
     usb_desc_iter_t iter;
