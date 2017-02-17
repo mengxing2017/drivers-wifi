@@ -31,7 +31,7 @@ class BitField {
 
   private:
     constexpr static ValueType mask(unsigned int offset, size_t len) {
-        return ((1 << len) - 1) << offset;
+        return ((1ull << len) - 1) << offset;
     }
 
     ValueType val_ = 0;

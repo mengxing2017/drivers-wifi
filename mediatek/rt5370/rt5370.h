@@ -32,7 +32,17 @@ enum UsbModeOffset : uint8_t {
 constexpr uint16_t RT5390 = 0x5390;
 constexpr uint16_t REV_RT5390F = 0x0502;
 constexpr uint16_t REV_RT5390R = 0x1502;
+
+struct RxWcidEntry {
+    uint8_t mac[6];
+    uint8_t ba_sess_mask[2];
+} __PACKED;
+
+constexpr uint16_t RX_WCID_BASE = 0x1800;
 constexpr uint16_t FW_IMAGE_BASE = 0x3000;
+constexpr uint16_t IV_EIV_BASE = 0x6000;
+constexpr uint16_t WCID_ATTR_BASE = 0x6800;
+constexpr uint16_t SHARED_KEY_MODE_BASE = 0x7000;
 
 // B/G min/max TX power
 constexpr uint16_t kMinTxPower = 0;
@@ -50,6 +60,37 @@ class WpdmaGloCfg : public Register<0x0208> {
     BIT_FIELD(tx_wb_ddone, 6, 1);
     BIT_FIELD(big_endian, 7, 1);
     BIT_FIELD(hdr_seg_len, 8, 8);
+};
+
+class GpioCtrl : public Register<0x0228> {
+  public:
+    BIT_FIELD(gpio0_data, 0, 1);
+    BIT_FIELD(gpio1_data, 1, 1);
+    BIT_FIELD(gpio2_data, 2, 1);
+    BIT_FIELD(gpio3_data, 3, 1);
+    BIT_FIELD(gpio4_data, 4, 1);
+    BIT_FIELD(gpio5_data, 5, 1);
+    BIT_FIELD(gpio6_data, 6, 1);
+    BIT_FIELD(gpio7_data, 7, 1);
+
+    BIT_FIELD(gpio0_dir, 8, 1);
+    BIT_FIELD(gpio1_dir, 9, 1);
+    BIT_FIELD(gpio2_dir, 10, 1);
+    BIT_FIELD(gpio3_dir, 11, 1);
+    BIT_FIELD(gpio4_dir, 12, 1);
+    BIT_FIELD(gpio5_dir, 13, 1);
+    BIT_FIELD(gpio6_dir, 14, 1);
+    BIT_FIELD(gpio7_dir, 15, 1);
+
+    BIT_FIELD(gpio8_data, 16, 1);
+    BIT_FIELD(gpio9_data, 17, 1);
+    BIT_FIELD(gpio10_data, 18, 1);
+    BIT_FIELD(gpio11_data, 19, 1);
+
+    BIT_FIELD(gpio8_dir, 24, 1);
+    BIT_FIELD(gpio9_dir, 25, 1);
+    BIT_FIELD(gpio10_dir, 26, 1);
+    BIT_FIELD(gpio11_dir, 27, 1);
 };
 
 class UsbDmaCfg : public Register<0x02a0> {
@@ -180,6 +221,17 @@ class BbpCsrCfg : public Register<0x101c> {
     BIT_FIELD(bbp_csr_kick, 17, 1);
     BIT_FIELD(bbp_par_dur, 18, 1);
     BIT_FIELD(bbp_rw_mode, 19, 1);
+};
+
+class LedCfg : public Register<0x102c> {
+  public:
+    BIT_FIELD(led_on_time, 0, 8);
+    BIT_FIELD(led_off_time, 8, 8);
+    BIT_FIELD(slow_blk_time, 16, 6);
+    BIT_FIELD(r_led_mode, 24, 2);
+    BIT_FIELD(g_led_mode, 26, 2);
+    BIT_FIELD(y_led_mode, 28, 2);
+    BIT_FIELD(led_pol, 30, 1);
 };
 
 class ForceBaWinsize : public Register<0x1040> {
@@ -741,6 +793,75 @@ class Rfcsr49 : public RfcsrRegister<49> {
   public:
     BIT_FIELD(tx, 0, 6);
     BIT_FIELD(ep, 6, 2);
+};
+
+class RxInfo : public BitField<uint16_t, uint32_t, 0> {
+  public:
+    constexpr explicit RxInfo(uint32_t val) : BitField(val) {}
+    BIT_FIELD(usb_dma_rx_pkt_len, 0, 16);
+};
+
+class RxDesc : public BitField<uint16_t, uint32_t, 0 /* unused */> {
+  public:
+    constexpr explicit RxDesc(uint32_t val) : BitField(val) {}
+    BIT_FIELD(ba, 0, 1);
+    BIT_FIELD(data, 1, 1);
+    BIT_FIELD(nulldata, 2, 1);
+    BIT_FIELD(frag, 3, 1);
+    BIT_FIELD(unicast_to_me, 4, 1);
+    BIT_FIELD(multicast, 5, 1);
+    BIT_FIELD(broadcast, 6, 1);
+    BIT_FIELD(my_bss, 7, 1);
+    BIT_FIELD(crc_error, 8, 1);
+    BIT_FIELD(cipher_error, 9, 2);
+    BIT_FIELD(amsdu, 11, 1);
+    BIT_FIELD(htc, 12, 1);
+    BIT_FIELD(rssi, 13, 1);
+    BIT_FIELD(l2pad, 14, 1);
+    BIT_FIELD(ampdu, 15, 1);
+    BIT_FIELD(decrypted, 16, 1);
+    BIT_FIELD(plcp_rssi, 17, 1);
+    BIT_FIELD(cipher_alg, 18, 1);
+    BIT_FIELD(last_amsdu, 19, 1);
+    BIT_FIELD(plcp_signal, 20, 12);
+};
+
+class Rxwi0 : public BitField<uint16_t, uint32_t, 1> {
+  public:
+    constexpr explicit Rxwi0(uint32_t val) : BitField(val) {}
+    BIT_FIELD(wcid, 0, 8);
+    BIT_FIELD(key_idx, 8, 2);
+    BIT_FIELD(bss_idx, 10, 3);
+    BIT_FIELD(udf, 13, 3);
+    BIT_FIELD(mpdu_total_byte_count, 16, 12);
+    BIT_FIELD(tid, 28, 4);
+};
+
+class Rxwi1 : public BitField<uint16_t, uint32_t, 2> {
+  public:
+    constexpr explicit Rxwi1(uint32_t val) : BitField(val) {}
+    BIT_FIELD(frag, 0, 4);
+    BIT_FIELD(seq, 4, 12);
+    BIT_FIELD(mcs, 16, 7);
+    BIT_FIELD(bw, 23, 1);
+    BIT_FIELD(sgi, 24, 1);
+    BIT_FIELD(stbc, 25, 2);
+    BIT_FIELD(phy_mode, 30, 2);
+};
+
+class Rxwi2 : public BitField<uint16_t, uint32_t, 3> {
+  public:
+    constexpr explicit Rxwi2(uint32_t val) : BitField(val) {}
+    BIT_FIELD(rssi0, 0, 8);
+    BIT_FIELD(rssi1, 8, 8);
+    BIT_FIELD(rssi2, 8, 8);
+};
+
+class Rxwi3 : public BitField<uint16_t, uint32_t, 4> {
+  public:
+    constexpr explicit Rxwi3(uint32_t val) : BitField(val) {}
+    BIT_FIELD(snr0, 0, 8);
+    BIT_FIELD(snr1, 8, 8);
 };
 
 }  // namespace rt5370

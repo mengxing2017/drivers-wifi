@@ -11,6 +11,7 @@
 #include <mx/time.h>
 
 #include <endian.h>
+#include <inttypes.h>
 
 #include <algorithm>
 #include <cstdio>
@@ -163,7 +164,13 @@ mx_status_t Device::Bind() {
     ReadEepromField(&ef);
     std::printf("rt5370 freq offset=%#x\n", ef.offset());
 
-    // TODO: rfkill switch GPIO
+    // rfkill switch
+    GpioCtrl gc;
+    status = ReadRegister(&gc);
+    CHECK_READ(GPIO_CTRL, status);
+    gc.set_gpio2_dir(1);
+    status = WriteRegister(gc);
+    CHECK_WRITE(GPIO_CTRL, status);
 
     // TODO: allocate and initialize some queues
 
@@ -217,12 +224,15 @@ mx_status_t Device::Bind() {
         return status;
     }
 
+    // TODO: configure erp?
+    // TODO: configure tx
+
     status = StopRxQueue();
     if (status != NO_ERROR ) {
         std::printf("rt5370 could not stop rx queue\n");
         return status;
     }
-    auto chan = channels_.find(11);
+    auto chan = channels_.find(1);
     assert(chan != channels_.end());
     status = ConfigureChannel(chan->second);
     if (status != NO_ERROR) {
@@ -230,11 +240,58 @@ mx_status_t Device::Bind() {
         return status;
     }
 
-    // configure antenna
+    // TODO: configure tx power
+
+    // TODO: configure retry limit (move this)
+    TxRtyCfg trc;
+    status = ReadRegister(&trc);
+    CHECK_READ(TX_RTY_CFG, status);
+    trc.set_short_rty_limit(0x07);
+    trc.set_long_rty_limit(0x04);
+    status = WriteRegister(trc);
+    CHECK_WRITE(TX_RTY_CFG, status);
+
+    // TODO: configure power save (move these)
+    AutoWakeupCfg awc;
+    status = ReadRegister(&awc);
+    CHECK_READ(AUTO_WAKEUP_CFG, status);
+    awc.set_wakeup_lead_time(0);
+    awc.set_sleep_tbtt_num(0);
+    awc.set_auto_wakeup_en(0);
+    status = WriteRegister(awc);
+    CHECK_WRITE(AUTO_WAKEUP_CFG, status);
+
+    status = McuCommand(MCU_WAKEUP, 0xff, 0, 2);
+    if (status < 0) {
+        std::printf("rt5370 error waking MCU err=%d\n", status);
+        return status;
+    }
+
+    // TODO: configure antenna
+    // for now I'm hardcoding some antenna values
+    Bbp1 bbp1;
+    status = ReadBbp(&bbp1);
+    CHECK_READ(BBP1, status);
+    Bbp3 bbp3;
+    status = ReadBbp(&bbp3);
+    CHECK_READ(BBP3, status);
+    bbp3.set_val(0x00);
+    bbp1.set_val(0x40);
+    status = WriteBbp(bbp3);
+    CHECK_WRITE(BBP3, status);
+    status = WriteBbp(bbp1);
+    CHECK_WRITE(BBP1, status);
+    status = WriteBbp(BbpRegister<66>(0x1c));
+    CHECK_WRITE(BBP66, status);
 
     status = StartQueues();
     if (status != NO_ERROR) {
         std::printf("rt5370 could not start queues\n");
+        return status;
+    }
+
+    status = SetRxFilter();
+    if (status != NO_ERROR) {
         return status;
     }
 
@@ -516,6 +573,10 @@ mx_status_t Device::LoadFirmware() {
     }
     mxsleep(10ms);
 
+    H2mMailboxCsr hmcsr;
+    status = WriteRegister(hmcsr);
+    CHECK_WRITE(H2M_MAILBOX_CSR, status);
+
     SysCtrl sc;
     status = BusyWait(&sc, [&sc]() { return sc.mcu_ready(); }, 1ms);
     if (status < 0) {
@@ -534,7 +595,6 @@ mx_status_t Device::LoadFirmware() {
     status = WriteRegister(hba);
     CHECK_WRITE(H2M_BBP_AGENT, status);
 
-    H2mMailboxCsr hmcsr;
     status = WriteRegister(hmcsr);
     CHECK_WRITE(H2M_MAILBOX_CSR, status);
 
@@ -669,7 +729,7 @@ mx_status_t Device::EnableRadio() {
     CHECK_READ(WPDMA_GLO_CFG, status);
     wgc.set_tx_dma_en(1);
     wgc.set_rx_dma_en(1);
-    //wgc.set_wpdma_bt_size(2);  // ??? where did I get this?
+    wgc.set_wpdma_bt_size(2);
     wgc.set_tx_wb_ddone(1);
     status = WriteRegister(wgc);
     CHECK_WRITE(WPDMA_GLO_CFG, status);
@@ -681,7 +741,7 @@ mx_status_t Device::EnableRadio() {
     status = WriteRegister(msc);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    // LED control stuff
+    // TODO: LED control stuff
 
     return NO_ERROR;
 }
@@ -759,7 +819,7 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(btc);
     CHECK_WRITE(BCN_TIME_CFG, status);
 
-    status = SetRxFilter(false);
+    status = SetRxFilter();
     if (status != NO_ERROR) {
         return status;
     }
@@ -825,7 +885,18 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(mlc);
     CHECK_WRITE(MAX_LEN_CFG, status);
 
-    // TODO: LED_CFG
+    LedCfg lc;
+    status = ReadRegister(&lc);
+    CHECK_READ(LED_CFG, status);
+    lc.set_led_on_time(70);
+    lc.set_led_off_time(30);
+    lc.set_slow_blk_time(3);
+    lc.set_r_led_mode(3);
+    lc.set_g_led_mode(3);
+    lc.set_y_led_mode(3);
+    lc.set_led_pol(1);
+    status = WriteRegister(lc);
+    CHECK_WRITE(LED_CFG, status);
 
     MaxPcnt mp;
     mp.set_max_rx0q_pcnt(0x9f);
@@ -912,14 +983,14 @@ mx_status_t Device::InitRegisters() {
     status = ReadRegister(&mm40pc);
     CHECK_READ(MM40_PROT_CFG, status);
     mm40pc.set_prot_rate(0x4084);
-    mm40pc.set_prot_ctrl(1);
+    mm40pc.set_prot_ctrl(0);
     mm40pc.set_prot_nav(1);
-    mm40pc.set_txop_allow_cck_tx(0);
+    mm40pc.set_txop_allow_cck_tx(1);
     mm40pc.set_txop_allow_ofdm_tx(1);
     mm40pc.set_txop_allow_mm20_tx(1);
-    mm40pc.set_txop_allow_mm40_tx(0);
+    mm40pc.set_txop_allow_mm40_tx(1);
     mm40pc.set_txop_allow_gf20_tx(1);
-    mm40pc.set_txop_allow_gf40_tx(0);
+    mm40pc.set_txop_allow_gf40_tx(1);
     mm40pc.set_rtsth_en(0);
     status = WriteRegister(mm40pc);
     CHECK_WRITE(MM40_PROT_CFG, status);
@@ -928,9 +999,9 @@ mx_status_t Device::InitRegisters() {
     status = ReadRegister(&gf20pc);
     CHECK_READ(GF20_PROT_CFG, status);
     gf20pc.set_prot_rate(0x4004);
-    gf20pc.set_prot_ctrl(1);
+    gf20pc.set_prot_ctrl(0);
     gf20pc.set_prot_nav(1);
-    gf20pc.set_txop_allow_cck_tx(0);
+    gf20pc.set_txop_allow_cck_tx(1);
     gf20pc.set_txop_allow_ofdm_tx(1);
     gf20pc.set_txop_allow_mm20_tx(1);
     gf20pc.set_txop_allow_mm40_tx(0);
@@ -944,9 +1015,9 @@ mx_status_t Device::InitRegisters() {
     status = ReadRegister(&gf40pc);
     CHECK_READ(GF40_PROT_CFG, status);
     gf40pc.set_prot_rate(0x4084);
-    gf40pc.set_prot_ctrl(1);
+    gf40pc.set_prot_ctrl(0);
     gf40pc.set_prot_nav(1);
-    gf40pc.set_txop_allow_cck_tx(0);
+    gf40pc.set_txop_allow_cck_tx(1);
     gf40pc.set_txop_allow_ofdm_tx(1);
     gf40pc.set_txop_allow_mm20_tx(1);
     gf40pc.set_txop_allow_mm40_tx(1);
@@ -1026,11 +1097,31 @@ mx_status_t Device::InitRegisters() {
     status = WriteRegister(ppc);
     CHECK_WRITE(PWR_PIN_CFG, status);
 
-    // SharedKeyModeEntries???
+    for (int i = 0; i < 4; i++) {
+        status = WriteRegister(SHARED_KEY_MODE_BASE + i * sizeof(uint32_t), 0);
+        CHECK_WRITE(SHARED_KEY_MODE, status);
+    }
 
-    // WCID stuff and MacIveivEntries???
+    RxWcidEntry rwe;
+    memset(&rwe.mac, 0xff, sizeof(rwe.mac));
+    memset(&rwe.ba_sess_mask, 0xff, sizeof(rwe.ba_sess_mask));
+    for (int i = 0; i < 256; i++) {
+        uint16_t addr = RX_WCID_BASE + i * sizeof(rwe);
+        status = usb_control(usb_device_, (USB_DIR_OUT | USB_TYPE_VENDOR), kMultiWrite,
+                             0, addr, &rwe, sizeof(rwe));
+        if (status < (ssize_t)sizeof(rwe)) {
+            std::printf("rt5370 failed to set RX WCID search entry\n");
+            return ERR_BAD_STATE;
+        }
 
-    // Clear beacons
+        status = WriteRegister(WCID_ATTR_BASE + i * sizeof(uint32_t), 0);
+        CHECK_WRITE(WCID_ATTR, status);
+
+        status = WriteRegister(IV_EIV_BASE + i * 8, 0);
+        CHECK_WRITE(IV_EIV, status);
+    }
+
+    // Clear beacons ??????
 
     UsCycCnt ucc;
     status = ReadRegister(&ucc);
@@ -1189,11 +1280,25 @@ mx_status_t Device::InitBbp() {
     WriteBbp(BbpRegister<128>(0x12));
 
     // disable unused dac/adc
+    Bbp138 bbp138;
+    status = ReadBbp(&bbp138);
+    CHECK_READ(BBP138, status);
+    EepromNicConf0 enc0;
+    status = ReadEepromField(&enc0);
+    CHECK_READ(EEPROM_NIC_CONF0, status);
+    if (enc0.txpath() == 1) {
+        bbp138.set_tx_dac1(1);
+    }
+    if (enc0.rxpath() == 1) {
+        bbp138.set_rx_adc1(0);
+    }
+    status = WriteBbp(bbp138);
+    CHECK_WRITE(BBP138, status);
 
     EepromNicConf1 enc1;
     ReadEepromField(&enc1);
 
-    // check for bt coexist (don't think we need this yet)
+    // TODO: check for bt coexist (don't need this yet)
 
     // Use hardware antenna diversity for these chips
     if (rt_rev_ >= REV_RT5390R) {
@@ -1332,7 +1437,7 @@ mx_status_t Device::InitRfcsr() {
         return status;
     }
 
-    // led open drain enable
+    // TODO: led open drain enable ??? (doesn't appear in vendor driver?)
 
     return NO_ERROR;
 }
@@ -1354,6 +1459,7 @@ mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uin
 
     HostCmd hc;
     hc.set_command(command);
+    std::printf("rt5370 host command: %u\n", hc.val());
     status = WriteRegister(hc);
     CHECK_WRITE(HOST_CMD, status);
     mxsleep(1ms);
@@ -1458,7 +1564,7 @@ mx_status_t Device::ReadRfcsr(uint8_t addr, uint8_t* val) {
 
     rcc.clear();
     rcc.set_rf_csr_addr(addr);
-    rcc.set_rf_csr_rw(1);
+    rcc.set_rf_csr_rw(0);
     rcc.set_rf_csr_kick(1);
     status = WriteRegister(rcc);
     CHECK_WRITE(RF_CSR_CFG, status);
@@ -1493,7 +1599,7 @@ mx_status_t Device::WriteRfcsr(uint8_t addr, uint8_t val) {
     rcc.clear();
     rcc.set_rf_csr_data(val);
     rcc.set_rf_csr_addr(addr);
-    rcc.set_rf_csr_rw(0);
+    rcc.set_rf_csr_rw(1);
     rcc.set_rf_csr_kick(1);
     status = WriteRegister(rcc);
     CHECK_WRITE(RF_CSR_CFG, status);
@@ -1544,41 +1650,27 @@ mx_status_t Device::WaitForMacCsr() {
     return BusyWait(&avi, [&avi]() { return avi.val() && avi.val() != ~0u; }, 1ms);
 }
 
-mx_status_t Device::SetRxFilter(bool allow) {
+mx_status_t Device::SetRxFilter() {
     RxFiltrCfg rfc;
     auto status = ReadRegister(&rfc);
     CHECK_READ(RX_FILTR_CFG, status);
-    std::printf("rt5370 rx filter before: 0x%04x\n", rfc.val());
-    if (allow) {
-        rfc.set_drop_crc_err(0);
-        rfc.set_drop_phy_err(0);
-        rfc.set_drop_uc_nome(1);
-        rfc.set_drop_ver_err(1);
-        rfc.set_drop_dupl(1);
-        rfc.set_drop_cfack(0);
-        rfc.set_drop_cfend(0);
-        rfc.set_drop_ack(0);
-        rfc.set_drop_cts(0);
-        rfc.set_drop_rts(0);
-        rfc.set_drop_pspoll(0);
-        rfc.set_drop_bar(0);
-        rfc.set_drop_ctrl_rsv(0);
-    } else {
-        rfc.set_drop_crc_err(1);
-        rfc.set_drop_phy_err(1);
-        rfc.set_drop_uc_nome(1);
-        rfc.set_drop_ver_err(1);
-        rfc.set_drop_dupl(1);
-        rfc.set_drop_cfack(1);
-        rfc.set_drop_cfend(1);
-        rfc.set_drop_ack(1);
-        rfc.set_drop_cts(1);
-        rfc.set_drop_rts(1);
-        rfc.set_drop_pspoll(1);
-        rfc.set_drop_bar(1);
-        rfc.set_drop_ctrl_rsv(1);
-    }
-    std::printf("rt5370 rx filter after:  0x%04x\n", rfc.val());
+    rfc.set_drop_crc_err(1);
+    rfc.set_drop_phy_err(1);
+    rfc.set_drop_uc_nome(1);
+    rfc.set_drop_not_mybss(0);
+    rfc.set_drop_ver_err(1);
+    rfc.set_drop_mc(0);
+    rfc.set_drop_bc(0);
+    rfc.set_drop_dupl(1);
+    rfc.set_drop_cfack(1);
+    rfc.set_drop_cfend(1);
+    rfc.set_drop_ack(1);
+    rfc.set_drop_cts(1);
+    rfc.set_drop_rts(1);
+    rfc.set_drop_pspoll(1);
+    rfc.set_drop_ba(0);
+    rfc.set_drop_bar(1);
+    rfc.set_drop_ctrl_rsv(1);
     status = WriteRegister(rfc);
     CHECK_WRITE(RX_FILTR_CFG, status);
 
@@ -1647,14 +1739,15 @@ mx_status_t Device::StartQueues() {
     status = WriteRegister(msc);
     CHECK_WRITE(MAC_SYS_CTRL, status);
 
-    BcnTimeCfg btc;
-    status = ReadRegister(&btc);
-    CHECK_READ(BCN_TIME_CFG, status);
-    btc.set_tsf_timer_en(1);
-    btc.set_tbtt_timer_en(1);
-    btc.set_bcn_tx_en(1);
-    status = WriteRegister(btc);
-    CHECK_WRITE(BCN_TIME_CFG, status);
+    // Beacon queue  --  maybe this isn't started here
+    //BcnTimeCfg btc;
+    //status = ReadRegister(&btc);
+    //CHECK_READ(BCN_TIME_CFG, status);
+    //btc.set_tsf_timer_en(1);
+    //btc.set_tbtt_timer_en(1);
+    //btc.set_bcn_tx_en(1);
+    //status = WriteRegister(btc);
+    //CHECK_WRITE(BCN_TIME_CFG, status);
 
     // kick the rx queue???
 
@@ -1676,7 +1769,7 @@ mx_status_t Device::SetupInterface() {
     BcnTimeCfg btc;
     auto status = ReadRegister(&btc);
     CHECK_READ(BCN_TIME_CFG, status);
-    btc.set_tsf_sync_mode(0);
+    btc.set_tsf_sync_mode(1);
     status = WriteRegister(btc);
     CHECK_WRITE(BCN_TIME_CFG, status);
 
@@ -1866,6 +1959,55 @@ mx_status_t Device::BusyWait(R* reg, std::function<bool()> pred, std::chrono::mi
     return NO_ERROR;
 }
 
+static void dump_rx(iotxn_t* request) {
+    std::printf("rt5370 rx len=%" PRIu64 "\n", request->actual);
+    if (request->actual < 24) {
+        std::printf("short read\n");
+        return;
+    }
+    uint8_t* data;
+    request->ops->mmap(request, reinterpret_cast<void**>(&data));
+
+    uint32_t* data32 = reinterpret_cast<uint32_t*>(data);
+    RxInfo rx_info(letoh32(data32[RxInfo::addr()]));
+    std::printf("rxinfo usb_dma_rx_pkt_len=%u\n", rx_info.usb_dma_rx_pkt_len());
+    if (request->actual < 4 + rx_info.usb_dma_rx_pkt_len()) {
+        std::printf("short read\n");
+        return;
+    }
+
+    RxDesc rx_desc(*(uint32_t*)(data + 4 + rx_info.usb_dma_rx_pkt_len()));
+
+    Rxwi0 rxwi0(letoh32(data32[Rxwi0::addr()]));
+    Rxwi1 rxwi1(letoh32(data32[Rxwi1::addr()]));
+    Rxwi2 rxwi2(letoh32(data32[Rxwi2::addr()]));
+    Rxwi3 rxwi3(letoh32(data32[Rxwi3::addr()]));
+
+    std::printf("rxdesc ba=%u data=%u nulldata=%u frag=%u unicast_to_me=%u multicast=%u broadcast=%u\nmy_bss=%u crc_error=%u cipher_error=%u amsdu=%u htc=%u rssi=%u l2pad=%u ampdu=%u decrypted=%u\nplcp_rssi=%u cipher_alg=%u last_amsdu=%u plcp_signal=0x%04x\n",
+            rx_desc.ba(), rx_desc.data(), rx_desc.nulldata(), rx_desc.frag(), rx_desc.unicast_to_me(),
+            rx_desc.multicast(), rx_desc.broadcast(), rx_desc.my_bss(), rx_desc.crc_error(),
+            rx_desc.cipher_error(), rx_desc.amsdu(), rx_desc.htc(), rx_desc.rssi(),
+            rx_desc.l2pad(), rx_desc.ampdu(), rx_desc.decrypted(), rx_desc.plcp_rssi(),
+            rx_desc.cipher_alg(), rx_desc.last_amsdu(), rx_desc.plcp_signal());
+    std::printf("rxwi0 wcid=0x%02x key_idx=%u bss_idx=%u udf=0x%02x mpdu_total_byte_count=%u tid=0x%02x\n",
+            rxwi0.wcid(), rxwi0.key_idx(), rxwi0.bss_idx(), rxwi0.udf(), rxwi0.mpdu_total_byte_count(), rxwi0.tid());
+    std::printf("rxwi1 frag=%u seq=%u mcs=0x%02x bw=%u sgi=%u stbc=%u phy_mode=%u\n",
+            rxwi1.frag(), rxwi1.seq(), rxwi1.mcs(), rxwi1.bw(), rxwi1.sgi(), rxwi1.stbc(), rxwi1.phy_mode());
+    std::printf("rxwi2 rssi0=%u rssi1=%u rssi2=%u\n",
+            rxwi2.rssi0(), rxwi2.rssi1(), rxwi2.rssi2());
+    std::printf("rxwi3 snr0=%u snr1=%u\n",
+            rxwi3.snr0(), rxwi3.snr1());
+
+    size_t i = 0;
+    for (; i < request->actual; i++) {
+        std::printf("0x%02x ", data[i]);
+        if (i % 8 == 7) std::printf("\n");
+    }
+    if (i % 8) {
+        std::printf("\n");
+    }
+}
+
 void Device::HandleRxComplete(iotxn_t* request) {
     std::printf("rt5370::Device::HandleRxComplete\n");
     if (request->status == ERR_REMOTE_CLOSED) {
@@ -1878,12 +2020,14 @@ void Device::HandleRxComplete(iotxn_t* request) {
     if (request->status == NO_ERROR) {
         // Handle completed rx
         std::printf("rt5370 rx complete\n");
-        completed_reads_.push_back(request);
+        dump_rx(request);
+        //completed_reads_.push_back(request);
     } else {
         std::printf("rt5370 rx txn status %d\n", request->status);
-        iotxn_queue(usb_device_, request);
+        //iotxn_queue(usb_device_, request);
     }
-    UpdateSignals_Locked();
+    iotxn_queue(usb_device_, request);
+    //UpdateSignals_Locked();
 }
 
 void Device::HandleTxComplete(iotxn_t* request) {
@@ -2015,6 +2159,7 @@ ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
 }
 
 void Device::ReadIotxnComplete(iotxn_t* request, void* cookie) {
+    std::printf("rt5370 Device::ReadIotxnComplete\n");
     auto dev = static_cast<Device*>(cookie);
     auto f = std::async(std::launch::async, &rt5370::Device::HandleRxComplete, dev, request);
 }

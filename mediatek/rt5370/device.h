@@ -89,7 +89,7 @@ class Device {
     mx_status_t DetectAutoRun(bool* autorun);
     mx_status_t DisableWpdma();
     mx_status_t WaitForMacCsr();
-    mx_status_t SetRxFilter(bool allow);
+    mx_status_t SetRxFilter();
     mx_status_t NormalModeSetup();
     mx_status_t StartQueues();
     mx_status_t StopRxQueue();
