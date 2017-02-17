@@ -34,12 +34,6 @@ class Device {
     mx_status_t Bind();
 
   private:
-    enum class IoctlOp {
-        Scan,
-        Associate,
-        Disassociate,
-    };
-
     struct Channel {
         Channel(int channel, int hw_index, uint32_t N, uint32_t R, uint32_t K) :
             channel(channel), hw_index(hw_index), N(N), R(R), K(K) {}
@@ -104,22 +98,12 @@ class Device {
     void HandleRxComplete(iotxn_t* request);
     void HandleTxComplete(iotxn_t* request);
 
-    void UpdateSignals_Locked();
-
     // DDK API
     void Unbind();
     mx_status_t Release();
-    ssize_t Read(void* buf, size_t count);
-    ssize_t Write(const void* buf, size_t count);
-    ssize_t Ioctl(IoctlOp op, const void* in_buf, size_t in_len,
-                  void* out_buf, size_t out_len);
 
     static void DdkUnbind(mx_device_t* device);
     static mx_status_t DdkRelease(mx_device_t* device);
-    static ssize_t DdkRead(mx_device_t* device, void* buf, size_t count, mx_off_t off);
-    static ssize_t DdkWrite(mx_device_t* device, const void* buf, size_t count, mx_off_t off);
-    static ssize_t DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
-                            size_t in_len, void* out_buf, size_t out_len);
 
     static void ReadIotxnComplete(iotxn_t* request, void* cookie);
     static void WriteIotxnComplete(iotxn_t* request, void* cookie);
@@ -142,15 +126,11 @@ class Device {
     uint16_t rt_rev_ = 0;
     uint16_t rf_type_ = 0;
 
-    bool dead_ = false;
-
     uint8_t mac_addr_[ETH_MAC_SIZE];
     std::unordered_map<int, Channel> channels_;
     uint16_t lna_gain_ = 0;
 
     std::mutex lock_;
-    mx_signals_t signals_ = 0;
-    std::vector<iotxn_t*> completed_reads_;
     std::vector<iotxn_t*> free_write_reqs_;
 };
 

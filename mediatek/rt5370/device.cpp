@@ -17,6 +17,9 @@
 #include <cstdio>
 #include <future>
 
+#define RT5370_DUMP_EEPROM 0
+#define RT5370_DUMP_RX 0
+
 #define CHECK_REG(reg, op, status) \
     do { \
         if (status < 0) { \
@@ -53,9 +56,9 @@ constexpr T abs(T t) {
 
 template <typename T>
 constexpr T clamp(T val, T min, T max) {
-    return (val > max ? max :
-            (val < min ? min : val));
+    return std::min(max, std::max(min, val));
 }
+
 }  // namespace
 
 namespace rt5370 {
@@ -91,9 +94,6 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
 Device::~Device() {
     std::printf("rt5370::Device::~Device\n");
     for (auto txn : free_write_reqs_) {
-        txn->ops->release(txn);
-    }
-    for (auto txn : completed_reads_) {
         txn->ops->release(txn);
     }
 }
@@ -149,6 +149,7 @@ mx_status_t Device::Bind() {
         std::printf("rt5370 RF chipset %#x\n", rf_type_);
     } else {
         // TODO: support other RF chipsets
+        std::printf("rt5370 RF chipset %#x not supported!\n", rf_type_);
         return ERR_NOT_SUPPORTED;
     }
 
@@ -171,8 +172,6 @@ mx_status_t Device::Bind() {
     gc.set_gpio2_dir(1);
     status = WriteRegister(gc);
     CHECK_WRITE(GPIO_CTRL, status);
-
-    // TODO: allocate and initialize some queues
 
     status = LoadFirmware();
     if (status != NO_ERROR) {
@@ -227,6 +226,8 @@ mx_status_t Device::Bind() {
     // TODO: configure erp?
     // TODO: configure tx
 
+    // Configure the channel
+    // Need to stop the rx queue first
     status = StopRxQueue();
     if (status != NO_ERROR ) {
         std::printf("rt5370 could not stop rx queue\n");
@@ -297,9 +298,6 @@ mx_status_t Device::Bind() {
 
     device_ops_.unbind = &Device::DdkUnbind;
     device_ops_.release = &Device::DdkRelease;
-    device_ops_.read = &Device::DdkRead;
-    device_ops_.write = &Device::DdkWrite;
-    device_ops_.ioctl = &Device::DdkIoctl;
     device_init(&device_, driver_, "rt5370", &device_ops_);
 
     device_.ctx = this;
@@ -310,6 +308,7 @@ mx_status_t Device::Bind() {
         std::printf("rt5370 device added\n");
     }
 
+    // TODO: if status != NO_ERROR, reset the hw
     return status;
 }
 
@@ -383,7 +382,7 @@ mx_status_t Device::ReadEeprom() {
         eeprom_[i+7] = htole32(rd3.val()) >> 16;
     }
 
-#if 0
+#if RT5370_DUMP_EEPROM
     std::printf("0x0000: ");
     for (size_t i = 0; i < eeprom_.size(); i++) {
         std::printf("%04x ", eeprom_[i]);
@@ -1121,7 +1120,7 @@ mx_status_t Device::InitRegisters() {
         CHECK_WRITE(IV_EIV, status);
     }
 
-    // Clear beacons ??????
+    // TODO: Clear beacons ?????? (probably not needed as long as we are only STA)
 
     UsCycCnt ucc;
     status = ReadRegister(&ucc);
@@ -1459,7 +1458,6 @@ mx_status_t Device::McuCommand(uint8_t command, uint8_t token, uint8_t arg0, uin
 
     HostCmd hc;
     hc.set_command(command);
-    std::printf("rt5370 host command: %u\n", hc.val());
     status = WriteRegister(hc);
     CHECK_WRITE(HOST_CMD, status);
     mxsleep(1ms);
@@ -1505,7 +1503,6 @@ template <uint8_t A> mx_status_t Device::ReadBbp(BbpRegister<A>* reg) {
 }
 
 mx_status_t Device::WriteBbp(uint8_t addr, uint8_t val) {
-    std::printf("rt5370 BBP write: 0x%02x @ %u\n", val, addr);
     BbpCsrCfg bcc;
     auto status = BusyWait(&bcc, [&bcc]() { return !bcc.bbp_csr_kick(); });
     if (status < 0) {
@@ -1960,6 +1957,7 @@ mx_status_t Device::BusyWait(R* reg, std::function<bool()> pred, std::chrono::mi
 }
 
 static void dump_rx(iotxn_t* request) {
+#if RT5370_DUMP_RX
     std::printf("rt5370 rx len=%" PRIu64 "\n", request->actual);
     if (request->actual < 24) {
         std::printf("short read\n");
@@ -1983,16 +1981,23 @@ static void dump_rx(iotxn_t* request) {
     Rxwi2 rxwi2(letoh32(data32[Rxwi2::addr()]));
     Rxwi3 rxwi3(letoh32(data32[Rxwi3::addr()]));
 
-    std::printf("rxdesc ba=%u data=%u nulldata=%u frag=%u unicast_to_me=%u multicast=%u broadcast=%u\nmy_bss=%u crc_error=%u cipher_error=%u amsdu=%u htc=%u rssi=%u l2pad=%u ampdu=%u decrypted=%u\nplcp_rssi=%u cipher_alg=%u last_amsdu=%u plcp_signal=0x%04x\n",
-            rx_desc.ba(), rx_desc.data(), rx_desc.nulldata(), rx_desc.frag(), rx_desc.unicast_to_me(),
-            rx_desc.multicast(), rx_desc.broadcast(), rx_desc.my_bss(), rx_desc.crc_error(),
-            rx_desc.cipher_error(), rx_desc.amsdu(), rx_desc.htc(), rx_desc.rssi(),
+    std::printf("rxdesc ba=%u data=%u nulldata=%u frag=%u unicast_to_me=%u multicast=%u\n",
+            rx_desc.ba(), rx_desc.data(), rx_desc.nulldata(), rx_desc.frag(),
+            rx_desc.unicast_to_me(),rx_desc.multicast()); 
+    std::printf("broadcast=%u my_bss=%u crc_error=%u cipher_error=%u amsdu=%u htc=%u rssi=%u\n",
+            rx_desc.broadcast(), rx_desc.my_bss(), rx_desc.crc_error(),
+            rx_desc.cipher_error(), rx_desc.amsdu(), rx_desc.htc(), rx_desc.rssi());
+    std::printf("l2pad=%u ampdu=%u decrypted=%u plcp_rssi=%u cipher_alg=%u last_amsdu=%u\n",
             rx_desc.l2pad(), rx_desc.ampdu(), rx_desc.decrypted(), rx_desc.plcp_rssi(),
-            rx_desc.cipher_alg(), rx_desc.last_amsdu(), rx_desc.plcp_signal());
-    std::printf("rxwi0 wcid=0x%02x key_idx=%u bss_idx=%u udf=0x%02x mpdu_total_byte_count=%u tid=0x%02x\n",
-            rxwi0.wcid(), rxwi0.key_idx(), rxwi0.bss_idx(), rxwi0.udf(), rxwi0.mpdu_total_byte_count(), rxwi0.tid());
+            rx_desc.cipher_alg(), rx_desc.last_amsdu());
+    std::printf("plcp_signal=0x%04x\n", rx_desc.plcp_signal());
+
+    std::printf("rxwi0 wcid=0x%02x key_idx=%u bss_idx=%u udf=0x%02x "
+            "mpdu_total_byte_count=%u tid=0x%02x\n", rxwi0.wcid(), rxwi0.key_idx(), rxwi0.bss_idx(),
+            rxwi0.udf(), rxwi0.mpdu_total_byte_count(), rxwi0.tid());
     std::printf("rxwi1 frag=%u seq=%u mcs=0x%02x bw=%u sgi=%u stbc=%u phy_mode=%u\n",
-            rxwi1.frag(), rxwi1.seq(), rxwi1.mcs(), rxwi1.bw(), rxwi1.sgi(), rxwi1.stbc(), rxwi1.phy_mode());
+            rxwi1.frag(), rxwi1.seq(), rxwi1.mcs(), rxwi1.bw(), rxwi1.sgi(), rxwi1.stbc(),
+            rxwi1.phy_mode());
     std::printf("rxwi2 rssi0=%u rssi1=%u rssi2=%u\n",
             rxwi2.rssi0(), rxwi2.rssi1(), rxwi2.rssi2());
     std::printf("rxwi3 snr0=%u snr1=%u\n",
@@ -2006,10 +2011,10 @@ static void dump_rx(iotxn_t* request) {
     if (i % 8) {
         std::printf("\n");
     }
+#endif
 }
 
 void Device::HandleRxComplete(iotxn_t* request) {
-    std::printf("rt5370::Device::HandleRxComplete\n");
     if (request->status == ERR_REMOTE_CLOSED) {
         request->ops->release(request);
         return;
@@ -2019,15 +2024,11 @@ void Device::HandleRxComplete(iotxn_t* request) {
 
     if (request->status == NO_ERROR) {
         // Handle completed rx
-        std::printf("rt5370 rx complete\n");
         dump_rx(request);
-        //completed_reads_.push_back(request);
     } else {
         std::printf("rt5370 rx txn status %d\n", request->status);
-        //iotxn_queue(usb_device_, request);
     }
     iotxn_queue(usb_device_, request);
-    //UpdateSignals_Locked();
 }
 
 void Device::HandleTxComplete(iotxn_t* request) {
@@ -2040,34 +2041,10 @@ void Device::HandleTxComplete(iotxn_t* request) {
     std::lock_guard<std::mutex> guard(lock_);
 
     free_write_reqs_.push_back(request);
-    UpdateSignals_Locked();
-}
-
-void Device::UpdateSignals_Locked() {
-    mx_signals_t new_signals = 0;
-
-    if (dead_) {
-        new_signals |= (DEV_STATE_READABLE | DEV_STATE_ERROR);
-    }
-    if (!completed_reads_.empty()) {
-        new_signals |= DEV_STATE_READABLE;
-    }
-    if (!free_write_reqs_.empty()) {
-        new_signals |= DEV_STATE_WRITABLE;
-    }
-    if (new_signals != signals_) {
-        device_state_set_clr(&device_, new_signals & ~signals_, signals_ & ~new_signals);
-        signals_ = new_signals;
-    }
 }
 
 void Device::Unbind() {
     std::printf("rt5370::Device::Unbind\n");
-    {
-        std::lock_guard<std::mutex> guard(lock_);
-        dead_ = true;
-        UpdateSignals_Locked();
-    }
     device_remove(&device_);
 }
 
@@ -2075,61 +2052,6 @@ mx_status_t Device::Release() {
     std::printf("rt5370::Device::Release\n");
     delete this;
     return NO_ERROR;
-}
-
-ssize_t Device::Read(void* buf, size_t count) {
-    std::printf("rt5370::Device::Read %p %zu\n", buf, count);
-
-    if (dead_) {
-        return ERR_REMOTE_CLOSED;
-    }
-
-    return 0;
-}
-
-ssize_t Device::Write(const void* buf, size_t count) {
-    std::printf("rt5370::Device::Write %p %zu\n", buf, count);
-
-    if (dead_) {
-        return ERR_REMOTE_CLOSED;
-    }
-
-    std::lock_guard<std::mutex> guard(lock_);
-
-    if (free_write_reqs_.empty()) {
-        UpdateSignals_Locked();
-        return ERR_BUFFER_TOO_SMALL;
-    }
-
-    auto txn = free_write_reqs_.back();
-    free_write_reqs_.pop_back();
-    if (count > kWriteBufSize) {
-        UpdateSignals_Locked();
-        return ERR_INVALID_ARGS;
-    }
-
-    // Add TX header
-    txn->ops->copyto(txn, buf, count, 0);
-    txn->length = count;
-    iotxn_queue(usb_device_, txn);
-
-    UpdateSignals_Locked();
-    return count;
-}
-
-ssize_t Device::Ioctl(IoctlOp op, const void* in_buf, size_t in_len,
-        void* out_buf, size_t out_len) {
-    std::printf("rt5370::Device::Ioctl op %u in %p (%zu bytes) out %p (%zu bytes)\n",
-            static_cast<uint32_t>(op), in_buf, in_len, out_buf, out_len);
-    switch (op) {
-        case IoctlOp::Scan:
-            break;
-        case IoctlOp::Associate:
-            break;
-        case IoctlOp::Disassociate:
-            break;
-    }
-    return 0;
 }
 
 void Device::DdkUnbind(mx_device_t* device) {
@@ -2142,24 +2064,7 @@ mx_status_t Device::DdkRelease(mx_device_t* device) {
     return dev->Release();
 }
 
-ssize_t Device::DdkRead(mx_device_t* device, void* buf, size_t count, mx_off_t off) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Read(buf, count);
-}
-
-ssize_t Device::DdkWrite(mx_device_t* device, const void* buf, size_t count, mx_off_t off) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Write(buf, count);
-}
-
-ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf,
-        size_t in_len, void* out_buf, size_t out_len) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Ioctl(static_cast<IoctlOp>(op), in_buf, in_len, out_buf, out_len);
-}
-
 void Device::ReadIotxnComplete(iotxn_t* request, void* cookie) {
-    std::printf("rt5370 Device::ReadIotxnComplete\n");
     auto dev = static_cast<Device*>(cookie);
     auto f = std::async(std::launch::async, &rt5370::Device::HandleRxComplete, dev, request);
 }
