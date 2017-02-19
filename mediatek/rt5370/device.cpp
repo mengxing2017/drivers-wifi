@@ -6,6 +6,7 @@
 #include "rt5370.h"
 
 #include <ddk/common/usb.h>
+#include <ddk/protocol/wlan.h>
 #include <magenta/hw/usb.h>
 #include <mx/vmo.h>
 #include <mx/time.h>
@@ -173,134 +174,20 @@ mx_status_t Device::Bind() {
     status = WriteRegister(gc);
     CHECK_WRITE(GPIO_CTRL, status);
 
-    status = LoadFirmware();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 failed to load firmware\n");
-        return status;
-    }
-    std::printf("rt5370 firmware loaded\n");
-
-    // Initialize queues
-    for (size_t i = 0; i < kReadReqCount; i++) {
-        auto* req = usb_alloc_iotxn(rx_endpt_, kReadBufSize, 0);
-        if (req == nullptr) {
-            std::printf("rt5370 failed to allocate rx iotxn\n");
-            return ERR_NO_MEMORY;
-        }
-        req->length = kReadBufSize;
-        req->complete_cb = &Device::ReadIotxnComplete;
-        req->cookie = this;
-        iotxn_queue(usb_device_, req);
-    }
-    auto tx_endpt = tx_endpts_.front();
-    for (size_t i = 0; i < kWriteReqCount; i++) {
-        auto* req = usb_alloc_iotxn(tx_endpt, kWriteBufSize, 0);
-        if (req == nullptr) {
-            std::printf("rt5370 failed to allocate tx iotxn\n");
-            return ERR_NO_MEMORY;
-        }
-        req->length = kWriteBufSize;
-        req->complete_cb = &Device::WriteIotxnComplete;
-        req->cookie = this;
-        free_write_reqs_.push_back(req);
-    }
-
-    status = EnableRadio();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not enable radio\n");
-        return status;
-    }
-
-    status = StartQueues();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not start queues\n");
-        return status;
-    }
-
-    status = SetupInterface();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not setup interface\n");
-        return status;
-    }
-
-    // TODO: configure erp?
-    // TODO: configure tx
-
-    // Configure the channel
-    // Need to stop the rx queue first
-    status = StopRxQueue();
-    if (status != NO_ERROR ) {
-        std::printf("rt5370 could not stop rx queue\n");
-        return status;
-    }
-    auto chan = channels_.find(1);
-    assert(chan != channels_.end());
-    status = ConfigureChannel(chan->second);
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not configure channel 11\n");
-        return status;
-    }
-
-    // TODO: configure tx power
-
-    // TODO: configure retry limit (move this)
-    TxRtyCfg trc;
-    status = ReadRegister(&trc);
-    CHECK_READ(TX_RTY_CFG, status);
-    trc.set_short_rty_limit(0x07);
-    trc.set_long_rty_limit(0x04);
-    status = WriteRegister(trc);
-    CHECK_WRITE(TX_RTY_CFG, status);
-
-    // TODO: configure power save (move these)
-    AutoWakeupCfg awc;
-    status = ReadRegister(&awc);
-    CHECK_READ(AUTO_WAKEUP_CFG, status);
-    awc.set_wakeup_lead_time(0);
-    awc.set_sleep_tbtt_num(0);
-    awc.set_auto_wakeup_en(0);
-    status = WriteRegister(awc);
-    CHECK_WRITE(AUTO_WAKEUP_CFG, status);
-
-    status = McuCommand(MCU_WAKEUP, 0xff, 0, 2);
-    if (status < 0) {
-        std::printf("rt5370 error waking MCU err=%d\n", status);
-        return status;
-    }
-
-    // TODO: configure antenna
-    // for now I'm hardcoding some antenna values
-    Bbp1 bbp1;
-    status = ReadBbp(&bbp1);
-    CHECK_READ(BBP1, status);
-    Bbp3 bbp3;
-    status = ReadBbp(&bbp3);
-    CHECK_READ(BBP3, status);
-    bbp3.set_val(0x00);
-    bbp1.set_val(0x40);
-    status = WriteBbp(bbp3);
-    CHECK_WRITE(BBP3, status);
-    status = WriteBbp(bbp1);
-    CHECK_WRITE(BBP1, status);
-    status = WriteBbp(BbpRegister<66>(0x1c));
-    CHECK_WRITE(BBP66, status);
-
-    status = StartQueues();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not start queues\n");
-        return status;
-    }
-
-    status = SetRxFilter();
-    if (status != NO_ERROR) {
-        return status;
-    }
-
+    memset(&device_ops_, 0, sizeof(device_ops_));
     device_ops_.unbind = &Device::DdkUnbind;
     device_ops_.release = &Device::DdkRelease;
     device_init(&device_, driver_, "rt5370", &device_ops_);
 
+    memset(&wlanmac_ops_, 0, sizeof(wlanmac_ops_));
+    wlanmac_ops_.start = &Device::DdkWlanStart;
+    wlanmac_ops_.stop = &Device::DdkWlanStop;
+    wlanmac_ops_.tx = &Device::DdkWlanTx;
+    wlanmac_ops_.set_channel = &Device::DdkWlanSetChannel;
+
     device_.ctx = this;
+    device_.protocol_id = MX_PROTOCOL_WLANMAC;
+    device_.protocol_ops = &wlanmac_ops_;
     status = device_add(&device_, usb_device_);
     if (status != NO_ERROR) {
         std::printf("rt5370 could not add device err=%d\n", status);
@@ -1956,31 +1843,13 @@ mx_status_t Device::BusyWait(R* reg, std::function<bool()> pred, std::chrono::mi
     return NO_ERROR;
 }
 
-static void dump_rx(iotxn_t* request) {
+static void dump_rx(iotxn_t* request, RxInfo rx_info, RxDesc rx_desc,
+        Rxwi0 rxwi0, Rxwi1 rxwi1, Rxwi2 rxwi2, Rxwi3 rxwi3) {
 #if RT5370_DUMP_RX
-    std::printf("rt5370 rx len=%" PRIu64 "\n", request->actual);
-    if (request->actual < 24) {
-        std::printf("short read\n");
-        return;
-    }
     uint8_t* data;
     request->ops->mmap(request, reinterpret_cast<void**>(&data));
-
-    uint32_t* data32 = reinterpret_cast<uint32_t*>(data);
-    RxInfo rx_info(letoh32(data32[RxInfo::addr()]));
+    std::printf("rt5370 rx len=%" PRIu64 "\n", request->actual);
     std::printf("rxinfo usb_dma_rx_pkt_len=%u\n", rx_info.usb_dma_rx_pkt_len());
-    if (request->actual < 4 + rx_info.usb_dma_rx_pkt_len()) {
-        std::printf("short read\n");
-        return;
-    }
-
-    RxDesc rx_desc(*(uint32_t*)(data + 4 + rx_info.usb_dma_rx_pkt_len()));
-
-    Rxwi0 rxwi0(letoh32(data32[Rxwi0::addr()]));
-    Rxwi1 rxwi1(letoh32(data32[Rxwi1::addr()]));
-    Rxwi2 rxwi2(letoh32(data32[Rxwi2::addr()]));
-    Rxwi3 rxwi3(letoh32(data32[Rxwi3::addr()]));
-
     std::printf("rxdesc ba=%u data=%u nulldata=%u frag=%u unicast_to_me=%u multicast=%u\n",
             rx_desc.ba(), rx_desc.data(), rx_desc.nulldata(), rx_desc.frag(),
             rx_desc.unicast_to_me(),rx_desc.multicast()); 
@@ -2024,10 +1893,32 @@ void Device::HandleRxComplete(iotxn_t* request) {
 
     if (request->status == NO_ERROR) {
         // Handle completed rx
-        dump_rx(request);
+        if (request->actual < 24) {
+            std::printf("short read\n");
+            goto done;
+        }
+        uint8_t* data;
+        request->ops->mmap(request, reinterpret_cast<void**>(&data));
+
+        uint32_t* data32 = reinterpret_cast<uint32_t*>(data);
+        RxInfo rx_info(letoh32(data32[RxInfo::addr()]));
+        if (request->actual < 4 + rx_info.usb_dma_rx_pkt_len()) {
+            std::printf("short read\n");
+            goto done;
+        }
+
+        RxDesc rx_desc(*(uint32_t*)(data + 4 + rx_info.usb_dma_rx_pkt_len()));
+
+        Rxwi0 rxwi0(letoh32(data32[Rxwi0::addr()]));
+        Rxwi1 rxwi1(letoh32(data32[Rxwi1::addr()]));
+        Rxwi2 rxwi2(letoh32(data32[Rxwi2::addr()]));
+        Rxwi3 rxwi3(letoh32(data32[Rxwi3::addr()]));
+
+        dump_rx(request, rx_info, rx_desc, rxwi0, rxwi1, rxwi2, rxwi3);
     } else {
         std::printf("rt5370 rx txn status %d\n", request->status);
     }
+done:
     iotxn_queue(usb_device_, request);
 }
 
@@ -2054,6 +1945,165 @@ mx_status_t Device::Release() {
     return NO_ERROR;
 }
 
+mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
+    std::printf("%s\n", __func__);
+    std::lock_guard<std::mutex> guard(lock_);
+
+    if (wlanmac_ifc_ != nullptr) {
+        return ERR_BAD_STATE;
+    }
+
+    auto status = LoadFirmware();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 failed to load firmware\n");
+        return status;
+    }
+    std::printf("rt5370 firmware loaded\n");
+
+    // Initialize queues
+    for (size_t i = 0; i < kReadReqCount; i++) {
+        auto* req = usb_alloc_iotxn(rx_endpt_, kReadBufSize, 0);
+        if (req == nullptr) {
+            std::printf("rt5370 failed to allocate rx iotxn\n");
+            return ERR_NO_MEMORY;
+        }
+        req->length = kReadBufSize;
+        req->complete_cb = &Device::ReadIotxnComplete;
+        req->cookie = this;
+        iotxn_queue(usb_device_, req);
+    }
+    auto tx_endpt = tx_endpts_.front();
+    for (size_t i = 0; i < kWriteReqCount; i++) {
+        auto* req = usb_alloc_iotxn(tx_endpt, kWriteBufSize, 0);
+        if (req == nullptr) {
+            std::printf("rt5370 failed to allocate tx iotxn\n");
+            return ERR_NO_MEMORY;
+        }
+        req->length = kWriteBufSize;
+        req->complete_cb = &Device::WriteIotxnComplete;
+        req->cookie = this;
+        free_write_reqs_.push_back(req);
+    }
+
+    status = EnableRadio();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not enable radio\n");
+        return status;
+    }
+
+    status = StartQueues();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not start queues\n");
+        return status;
+    }
+
+    status = SetupInterface();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not setup interface\n");
+        return status;
+    }
+
+    // TODO: configure erp?
+    // TODO: configure tx
+
+    // Configure the channel
+    // Need to stop the rx queue first
+    status = StopRxQueue();
+    if (status != NO_ERROR ) {
+        std::printf("rt5370 could not stop rx queue\n");
+        return status;
+    }
+    auto chan = channels_.find(11);
+    assert(chan != channels_.end());
+    status = ConfigureChannel(chan->second);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not configure channel 11\n");
+        return status;
+    }
+
+    // TODO: configure tx power
+
+    // TODO: configure retry limit (move this)
+    TxRtyCfg trc;
+    status = ReadRegister(&trc);
+    CHECK_READ(TX_RTY_CFG, status);
+    trc.set_short_rty_limit(0x07);
+    trc.set_long_rty_limit(0x04);
+    status = WriteRegister(trc);
+    CHECK_WRITE(TX_RTY_CFG, status);
+
+    // TODO: configure power save (move these)
+    AutoWakeupCfg awc;
+    status = ReadRegister(&awc);
+    CHECK_READ(AUTO_WAKEUP_CFG, status);
+    awc.set_wakeup_lead_time(0);
+    awc.set_sleep_tbtt_num(0);
+    awc.set_auto_wakeup_en(0);
+    status = WriteRegister(awc);
+    CHECK_WRITE(AUTO_WAKEUP_CFG, status);
+
+    status = McuCommand(MCU_WAKEUP, 0xff, 0, 2);
+    if (status < 0) {
+        std::printf("rt5370 error waking MCU err=%d\n", status);
+        return status;
+    }
+
+    // TODO: configure antenna
+    // for now I'm hardcoding some antenna values
+    Bbp1 bbp1;
+    status = ReadBbp(&bbp1);
+    CHECK_READ(BBP1, status);
+    Bbp3 bbp3;
+    status = ReadBbp(&bbp3);
+    CHECK_READ(BBP3, status);
+    bbp3.set_val(0x00);
+    bbp1.set_val(0x40);
+    status = WriteBbp(bbp3);
+    CHECK_WRITE(BBP3, status);
+    status = WriteBbp(bbp1);
+    CHECK_WRITE(BBP1, status);
+    status = WriteBbp(BbpRegister<66>(0x1c));
+    CHECK_WRITE(BBP66, status);
+
+    status = StartQueues();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not start queues\n");
+        return status;
+    }
+
+    status = SetRxFilter();
+    if (status != NO_ERROR) {
+        return status;
+    }
+
+    wlanmac_ifc_ = ifc;
+    wlanmac_cookie_ = cookie;
+    return NO_ERROR;
+}
+
+void Device::WlanStop() {
+    std::lock_guard<std::mutex> guard(lock_);
+    wlanmac_ifc_ = nullptr;
+    wlanmac_cookie_ = nullptr;
+
+    // TODO disable radios, stop queues, etc.
+}
+
+void Device::WlanTx(uint32_t options, void* data, size_t len) {
+    // TODO
+}
+
+mx_status_t Device::WlanSetChannel(uint32_t options, wlan_channel_t* chan) {
+    if (options != 0) {
+        return ERR_INVALID_ARGS;
+    }
+    auto channel = channels_.find(chan->channel_num);
+    if (channel == channels_.end()) {
+        return ERR_NOT_FOUND;
+    }
+    return ConfigureChannel(channel->second);
+}
+
 void Device::DdkUnbind(mx_device_t* device) {
     auto dev = static_cast<Device*>(device->ctx);
     dev->Unbind();
@@ -2062,6 +2112,27 @@ void Device::DdkUnbind(mx_device_t* device) {
 mx_status_t Device::DdkRelease(mx_device_t* device) {
     auto dev = static_cast<Device*>(device->ctx);
     return dev->Release();
+}
+
+mx_status_t Device::DdkWlanStart(mx_device_t* device, wlanmac_ifc_t* ifc, void* cookie) {
+    std::printf("%s\n", __func__);
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->WlanStart(ifc, cookie);
+}
+
+void Device::DdkWlanStop(mx_device_t* device) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->WlanStop();
+}
+
+void Device::DdkWlanTx(mx_device_t* device, uint32_t options, void* data, size_t length) {
+    auto dev = static_cast<Device*>(device->ctx);
+    dev->WlanTx(options, data, length);
+}
+
+mx_status_t Device::DdkWlanSetChannel(mx_device_t* device, uint32_t options, wlan_channel_t* chan) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->WlanSetChannel(options, chan); 
 }
 
 void Device::ReadIotxnComplete(iotxn_t* request, void* cookie) {

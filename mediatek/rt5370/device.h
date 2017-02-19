@@ -8,6 +8,7 @@
 #include <ddk/driver.h>
 #include <ddk/iotxn.h>
 #include <ddk/protocol/ethernet.h>
+#include <ddk/protocol/wlan.h>
 
 #include <array>
 #include <chrono>
@@ -102,8 +103,20 @@ class Device {
     void Unbind();
     mx_status_t Release();
 
+    // Wlan Mac API
+    mx_status_t WlanStart(wlanmac_ifc_t* ifc, void* cookie);
+    void WlanStop();
+    void WlanTx(uint32_t options, void* data, size_t len);
+    mx_status_t WlanSetChannel(uint32_t options, wlan_channel_t* chan);
+
     static void DdkUnbind(mx_device_t* device);
     static mx_status_t DdkRelease(mx_device_t* device);
+
+    static mx_status_t DdkWlanStart(mx_device_t* device, wlanmac_ifc_t* ifc, void* cookie);
+    static void DdkWlanStop(mx_device_t* device);
+    static void DdkWlanTx(mx_device_t* device, uint32_t options, void* data, size_t length);
+    static mx_status_t DdkWlanSetChannel(mx_device_t* device, uint32_t options,
+            wlan_channel_t* chan);
 
     static void ReadIotxnComplete(iotxn_t* request, void* cookie);
     static void WriteIotxnComplete(iotxn_t* request, void* cookie);
@@ -112,6 +125,10 @@ class Device {
     mx_device_t* usb_device_;
     mx_device_t device_;
     mx_protocol_device_t device_ops_;
+
+    wlanmac_ifc_t* wlanmac_ifc_ = nullptr;
+    void* wlanmac_cookie_ = nullptr;
+    wlanmac_protocol_t wlanmac_ops_;
 
     uint8_t rx_endpt_ = 0;
     //uint8_t beacon_endpt_ = 0;

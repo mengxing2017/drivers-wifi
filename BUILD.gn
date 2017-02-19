@@ -6,5 +6,6 @@ group("wifi") {
   deps = [
     "//drivers/wifi/qualcomm/qca6174",
     "//drivers/wifi/mediatek/rt5370",
+    "//drivers/wifi/wlan",
   ]
 }
