@@ -1,0 +1,17 @@
+# Copyright 2017 The Fuchsia Authors. All rights reserved.
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+shared_library("wlan") {
+  sources = [
+    "binding.c",
+    "driver.cpp",
+    "wlan_device.cpp",
+  ]
+
+  deps = [ "//magenta/system/ulib/mx" ]
+
+  libs = [
+    "ddk",
+  ]
+}
