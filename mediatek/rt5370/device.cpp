@@ -1913,6 +1913,9 @@ void Device::HandleRxComplete(iotxn_t* request) {
         Rxwi1 rxwi1(letoh32(data32[Rxwi1::addr()]));
         Rxwi2 rxwi2(letoh32(data32[Rxwi2::addr()]));
         Rxwi3 rxwi3(letoh32(data32[Rxwi3::addr()]));
+        if (wlanmac_ifc_) {
+            wlanmac_ifc_->recv(wlanmac_cookie_, data + 20, rxwi0.mpdu_total_byte_count(), 0u);
+        }
 
         dump_rx(request, rx_info, rx_desc, rxwi0, rxwi1, rxwi2, rxwi3);
     } else {
