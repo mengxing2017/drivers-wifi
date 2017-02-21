@@ -15,3 +15,10 @@ shared_library("wlan") {
     "ddk",
   ]
 }
+
+executable("wl") {
+  sources = [
+    "wl.cpp",
+  ]
+  deps = [ "//magenta/system/ulib/mx" ]
+}
