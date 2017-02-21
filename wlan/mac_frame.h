@@ -4,11 +4,11 @@
 
 #pragma once
 
+#include "bitfield.h"
+
 #include <magenta/compiler.h>
 
 #include <cstdint>
-
-#include "bitfield.h"
 
 namespace wlan {
 
@@ -155,7 +155,7 @@ struct Beacon {
     uint16_t beacon_interval;
     CapabilityInfo cap;
     uint8_t ssid[32];
-    ssize_t ssid_len;
+    size_t ssid_len;
     uint8_t supp_rates[8];
     // etc.
 };

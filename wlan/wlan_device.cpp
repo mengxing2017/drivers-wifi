@@ -8,12 +8,15 @@
 #include <cstdio>
 #include <cstring>
 #include <cinttypes>
+#include <functional>
+
+#define DEBUG_BEACON 0
 
 namespace wlan {
 
 Device::Device(mx_driver_t* driver, mx_device_t* device, wlanmac_protocol_t* wlanmac_ops)
   : driver_(driver), wlanmac_device_(device), wlanmac_ops_(wlanmac_ops) {
-    std::memset(&driver_, 0, sizeof(driver_));  
+    std::memset(&driver_, 0, sizeof(driver_));
 }
 
 Device::~Device() {}
@@ -22,6 +25,7 @@ mx_status_t Device::Bind() {
     std::memset(&device_ops_, 0, sizeof(device_ops_));
     device_ops_.unbind = &Device::DdkUnbind;
     device_ops_.release = &Device::DdkRelease;
+    device_ops_.ioctl = &Device::DdkIoctl;
     device_init(&device_, driver_, "wlan", &device_ops_);
 
     device_.ctx = this;
@@ -38,7 +42,7 @@ mx_status_t Device::Bind() {
     ifc.recv = &Device::WlanRecv;
     wlanmac_ops_->start(wlanmac_device_, &ifc, this);
 
-    return status; 
+    return status;
 }
 
 void Device::Unbind() {
@@ -67,6 +71,19 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
         default:
             break;
     }
+}
+
+ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_channel) {
+    mx::channel chan[2];
+    auto status = mx::channel::create(0, &chan[0], &chan[1]);
+    if (status < 0) {
+        return status;
+    }
+
+    std::lock_guard<std::mutex> guard(lock_);
+    scan_channels_.insert(std::move(chan[0]));
+    *out_channel = chan[1].release();
+    return sizeof(mx_handle_t);
 }
 
 void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags) {
@@ -131,7 +148,9 @@ void Device::HandleBeacon(FrameControl fc, MgmtFrame* mf, uint32_t flags) {
         }
         data += 2 + data[1];
     }
+    SendBeacon(bcn);
 
+#if DEBUG_BEACON
     std::printf("wlan: beacon\n");
     std::printf("  bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
             bcn.bssid[0], bcn.bssid[1], bcn.bssid[2], bcn.bssid[3], bcn.bssid[4], bcn.bssid[5]);
@@ -145,6 +164,32 @@ void Device::HandleBeacon(FrameControl fc, MgmtFrame* mf, uint32_t flags) {
         if (bcn.supp_rates[i] == 0) break;
         std::printf("    %.1f Mbps\n", (500.0f * (bcn.supp_rates[i] & 0x3f)) / 1000.0f);
     }
+#endif
+}
+
+void Device::SendBeacon(const Beacon& beacon) {
+    std::lock_guard<std::mutex> guard(lock_);
+    if (scan_channels_.empty()) return;
+
+    wlan_scan_report rpt;
+    memset(&rpt, 0, sizeof(rpt));
+    std::memcpy(rpt.bssid, beacon.bssid, sizeof(rpt.bssid));
+    rpt.bss_type = 0;  // TODO
+    rpt.timestamp = beacon.timestamp;
+    rpt.beacon_period = beacon.beacon_interval;
+    rpt.capabilities = beacon.cap.val();
+    std::memcpy(rpt.ssid, beacon.ssid, sizeof(rpt.ssid));
+    rpt.ssid_len = beacon.ssid_len;
+    std::memcpy(rpt.supported_rates, beacon.supp_rates, sizeof(rpt.supported_rates));
+
+    for (auto iter = scan_channels_.cbegin(); iter != scan_channels_.cend(); ) {
+        auto status = iter->write(0, &rpt, sizeof(rpt), NULL, 0);
+        if (status == ERR_REMOTE_CLOSED) {
+            iter = scan_channels_.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
 }
 
 void Device::DdkUnbind(mx_device_t* device) {
@@ -157,6 +202,22 @@ mx_status_t Device::DdkRelease(mx_device_t* device) {
     return dev->Release();
 }
 
+ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, size_t in_len,
+                         void* out_buf, size_t out_len) {
+    auto dev = static_cast<Device*>(device->ctx);
+    switch (op) {
+    case IOCTL_WLAN_START_SCAN: {
+        if (in_len < sizeof(wlan_start_scan_args)) return ERR_INVALID_ARGS;
+        if (out_len < sizeof(mx_handle_t)) return ERR_INVALID_ARGS;
+        const wlan_start_scan_args* args = reinterpret_cast<const wlan_start_scan_args*>(in_buf);
+        mx_handle_t* h = reinterpret_cast<mx_handle_t*>(out_buf);
+        return dev->StartScan(args, h);
+    }
+    default:
+        return ERR_NOT_SUPPORTED;
+    }
+}
+
 void Device::WlanStatus(void* cookie, uint32_t status) {
     auto dev = static_cast<Device*>(cookie);
     dev->Status(status);
@@ -165,6 +226,10 @@ void Device::WlanStatus(void* cookie, uint32_t status) {
 void Device::WlanRecv(void* cookie, void* data, size_t length, uint32_t flags) {
     auto dev = static_cast<Device*>(cookie);
     dev->Recv(data, length, flags);
+}
+
+std::size_t Device::ChannelHasher::operator()(const mx::channel& ch) const {
+    return std::hash<mx_handle_t>{}(ch.get());
 }
 
 }  // namespace wlan
