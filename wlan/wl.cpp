@@ -4,6 +4,7 @@
 
 #include <magenta/device/wlan.h>
 #include <mx/channel.h>
+#include <mx/socket.h>
 
 #include <fcntl.h>
 
@@ -22,7 +23,22 @@ void print_scan_report(const wlan_scan_report& rpt) {
     std::cout << (uint32_t)rpt.bssid[0] << ":" << (uint32_t)rpt.bssid[1] << ":" << (uint32_t)rpt.bssid[2]
         << ":" << (uint32_t)rpt.bssid[3] << ":" << (uint32_t)rpt.bssid[4] << ":" << (uint32_t)rpt.bssid[5] << std::endl;
     std::cout.copyfmt(state);
-    std::cout << "  bss type: " << (rpt.bss_type == 0 ? "infrastructure" : "unknown") << std::endl;
+    std::cout << "  bss type: ";
+    switch (rpt.bss_type) {
+    case WLAN_BSSTYPE_INFRASTRUCTURE:
+        std::cout << "infrastructure";
+        break;
+    case WLAN_BSSTYPE_INDEPENDENT:
+        std::cout << "ad-hoc";
+        break;
+    case WLAN_BSSTYPE_UNKNOWN:
+        std::cout << "unknown (" << rpt.bss_type << ")";
+        break;
+    default:
+        std::cout << "invalid (" << rpt.bss_type << ")";
+        break;
+    }
+    std::cout << std::endl;
     std::cout << "  timestamp: " << rpt.timestamp << std::endl;
     std::cout << "  beacon period: " << rpt.beacon_period << std::endl;
     std::cout << std::hex << std::setw(4) << std::setfill('0') << std::showbase;
