@@ -39,6 +39,6 @@ class BitField {
 
 #define BIT_FIELD(name, offset, len) \
     constexpr void set_##name(uint32_t val) { this->set_bits(offset, len, val); } \
-    constexpr uint32_t name() { return this->get_bits(offset, len); }
+    constexpr uint32_t name() const { return this->get_bits(offset, len); }
 
 }  // namespace wlan

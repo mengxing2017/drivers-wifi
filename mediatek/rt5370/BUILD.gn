@@ -13,6 +13,7 @@ shared_library("rt5370") {
 
   libs = [
     "ddk",
+    "sync",
   ]
 
   data_deps = [ ":rt5370-firmware" ]
