@@ -28,9 +28,14 @@ mx_status_t Device::Bind() {
     device_ops_.ioctl = &Device::DdkIoctl;
     device_init(&device_, driver_, "wlan", &device_ops_);
 
+    ethmac_ops_.query = &Device::EthQuery;
+    ethmac_ops_.start = &Device::EthStart;
+    ethmac_ops_.stop = &Device::EthStop;
+    ethmac_ops_.send = &Device::EthSend;
+
     device_.ctx = this;
-    device_.protocol_id = MX_PROTOCOL_WLAN;
-    device_.protocol_ops = nullptr;
+    device_.protocol_id = MX_PROTOCOL_ETHERMAC;
+    device_.protocol_ops = &ethmac_ops_;
     auto status = device_add(&device_, wlanmac_device_);
     if (status != NO_ERROR) {
         std::printf("wlan could not add device err=%d\n", status);
@@ -38,9 +43,8 @@ mx_status_t Device::Bind() {
         std::printf("wlan device added\n");
     }
 
-    ifc.status = &Device::WlanStatus;
-    ifc.recv = &Device::WlanRecv;
-    wlanmac_ops_->start(wlanmac_device_, &ifc, this);
+    wlanmac_ifc_.status = &Device::WlanStatus;
+    wlanmac_ifc_.recv = &Device::WlanRecv;
 
     return status;
 }
@@ -54,6 +58,26 @@ mx_status_t Device::Release() {
     std::printf("wlan::Device::Release\n");
     delete this;
     return NO_ERROR;
+}
+
+mx_status_t Device::Query(uint32_t options, ethmac_info_t* info) {
+    auto status = wlanmac_ops_->query(wlanmac_device_, options, info);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    // Make sure this device is reported as a wlan device
+    info->features |= ETHMAC_FEATURE_WLAN;
+    return NO_ERROR;
+}
+
+mx_status_t Device::Start(ethmac_ifc_t* ifc, void* cookie) {
+    ethmac_ifc_ = ifc;
+    ethmac_cookie_ = cookie;
+    return wlanmac_ops_->start(wlanmac_device_, &wlanmac_ifc_, this);
+}
+
+void Device::Stop() {
+    wlanmac_ops_->stop(wlanmac_device_);
 }
 
 void Device::Status(uint32_t status) {
@@ -71,6 +95,10 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
         default:
             break;
     }
+}
+
+void Device::Send(uint32_t options, void* data, size_t length) {
+    wlanmac_ops_->tx(wlanmac_device_, options, data, length);
 }
 
 ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_channel) {
@@ -174,7 +202,13 @@ void Device::SendBeacon(const Beacon& beacon) {
     wlan_scan_report rpt;
     memset(&rpt, 0, sizeof(rpt));
     std::memcpy(rpt.bssid, beacon.bssid, sizeof(rpt.bssid));
-    rpt.bss_type = 0;  // TODO
+    if (beacon.cap.ess()) {
+        rpt.bss_type = WLAN_BSSTYPE_INFRASTRUCTURE;
+    } else if (beacon.cap.ibss()) {
+        rpt.bss_type = WLAN_BSSTYPE_INDEPENDENT;
+    } else {
+        rpt.bss_type = WLAN_BSSTYPE_UNKNOWN;
+    }
     rpt.timestamp = beacon.timestamp;
     rpt.beacon_period = beacon.beacon_interval;
     rpt.capabilities = beacon.cap.val();
@@ -216,6 +250,26 @@ ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, s
     default:
         return ERR_NOT_SUPPORTED;
     }
+}
+
+mx_status_t Device::EthQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->Query(options, info);
+}
+
+void Device::EthStop(mx_device_t* device) {
+    auto dev = static_cast<Device*>(device->ctx);
+    dev->Stop();
+}
+
+mx_status_t Device::EthStart(mx_device_t* device, ethmac_ifc_t* ifc, void* cookie) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->Start(ifc, cookie);
+}
+
+void Device::EthSend(mx_device_t* device, uint32_t options, void* data, size_t length) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->Send(options, data, length);
 }
 
 void Device::WlanStatus(void* cookie, uint32_t status) {
