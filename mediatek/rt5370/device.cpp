@@ -180,6 +180,7 @@ mx_status_t Device::Bind() {
     device_init(&device_, driver_, "rt5370", &device_ops_);
 
     memset(&wlanmac_ops_, 0, sizeof(wlanmac_ops_));
+    wlanmac_ops_.query = &Device::DdkWlanQuery;
     wlanmac_ops_.start = &Device::DdkWlanStart;
     wlanmac_ops_.stop = &Device::DdkWlanStop;
     wlanmac_ops_.tx = &Device::DdkWlanTx;
@@ -1948,6 +1949,13 @@ mx_status_t Device::Release() {
     return NO_ERROR;
 }
 
+mx_status_t Device::WlanQuery(uint32_t options, ethmac_info_t* info) {
+    info->mtu = 1500;
+    std::memcpy(info->mac, mac_addr_, ETH_MAC_SIZE);
+    info->features |= ETHMAC_FEATURE_WLAN;
+    return NO_ERROR;
+}
+
 mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     std::printf("%s\n", __func__);
     std::lock_guard<std::mutex> guard(lock_);
@@ -2115,6 +2123,11 @@ void Device::DdkUnbind(mx_device_t* device) {
 mx_status_t Device::DdkRelease(mx_device_t* device) {
     auto dev = static_cast<Device*>(device->ctx);
     return dev->Release();
+}
+
+mx_status_t Device::DdkWlanQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info) {
+    auto dev = static_cast<Device*>(device->ctx);
+    return dev->WlanQuery(options, info);
 }
 
 mx_status_t Device::DdkWlanStart(mx_device_t* device, wlanmac_ifc_t* ifc, void* cookie) {

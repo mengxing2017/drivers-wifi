@@ -33,6 +33,9 @@ mx_status_t Device::Bind() {
     ethmac_ops_.stop = &Device::EthStop;
     ethmac_ops_.send = &Device::EthSend;
 
+    wlanmac_ifc_.status = &Device::WlanStatus;
+    wlanmac_ifc_.recv = &Device::WlanRecv;
+
     device_.ctx = this;
     device_.protocol_id = MX_PROTOCOL_ETHERMAC;
     device_.protocol_ops = &ethmac_ops_;
@@ -42,9 +45,6 @@ mx_status_t Device::Bind() {
     } else {
         std::printf("wlan device added\n");
     }
-
-    wlanmac_ifc_.status = &Device::WlanStatus;
-    wlanmac_ifc_.recv = &Device::WlanRecv;
 
     return status;
 }

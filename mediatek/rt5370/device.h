@@ -104,6 +104,7 @@ class Device {
     mx_status_t Release();
 
     // Wlan Mac API
+    mx_status_t WlanQuery(uint32_t options, ethmac_info_t* info);
     mx_status_t WlanStart(wlanmac_ifc_t* ifc, void* cookie);
     void WlanStop();
     void WlanTx(uint32_t options, void* data, size_t len);
@@ -112,6 +113,7 @@ class Device {
     static void DdkUnbind(mx_device_t* device);
     static mx_status_t DdkRelease(mx_device_t* device);
 
+    static mx_status_t DdkWlanQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info);
     static mx_status_t DdkWlanStart(mx_device_t* device, wlanmac_ifc_t* ifc, void* cookie);
     static void DdkWlanStop(mx_device_t* device);
     static void DdkWlanTx(mx_device_t* device, uint32_t options, void* data, size_t length);
