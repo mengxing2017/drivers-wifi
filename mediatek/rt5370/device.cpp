@@ -166,6 +166,13 @@ mx_status_t Device::Bind() {
     ReadEepromField(&ef);
     std::printf("rt5370 freq offset=%#x\n", ef.offset());
 
+    EepromEirpMaxTxPower eemtp;
+    ReadEepromField(&eemtp);
+    if (eemtp.power_2g() < kEirpMaxPower) {
+        std::printf("rt5370 has EIRP tx power limit\n");
+        std::printf("rt5370 TODO: limit tx power\n");
+    }
+
     // rfkill switch
     GpioCtrl gc;
     status = ReadRegister(&gc);
@@ -1828,6 +1835,123 @@ mx_status_t Device::ConfigureChannel(const Channel& channel) {
     return NO_ERROR;
 }
 
+namespace {
+constexpr uint8_t CompensateTx(uint8_t power) {
+    // TODO: implement proper tx compensation
+    uint8_t high = (power & 0xf0) >> 4;
+    uint8_t low = power & 0x0f;
+    return (std::min<uint8_t>(high, 0x0c) << 4) | std::min<uint8_t>(low, 0x0c);
+}
+}  // namespace
+
+mx_status_t Device::ConfigureTxPower(const Channel& channel) {
+    // TODO: calculate tx power control
+    //       use 0 (normal) for now
+    Bbp1 b1;
+    auto status = ReadBbp(&b1);
+    CHECK_READ(BBP1, status);
+    b1.set_tx_power_ctrl(0);
+    status = WriteBbp(b1);
+    CHECK_WRITE(BBP1, status);
+
+    uint16_t eeprom_val = 0;
+    uint16_t offset = 0;
+
+    // TX_PWR_CFG_0
+    TxPwrCfg0 tpc0;
+    status = ReadRegister(&tpc0);
+    CHECK_READ(TX_PWR_CFG_0, status);
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc0.set_tx_pwr_cck_1(CompensateTx(eeprom_val & 0xff));
+    tpc0.set_tx_pwr_cck_5(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc0.set_tx_pwr_ofdm_6(CompensateTx(eeprom_val & 0xff));
+    tpc0.set_tx_pwr_ofdm_12(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = WriteRegister(tpc0);
+    CHECK_WRITE(TX_PWR_CFG_0, status);
+
+    // TX_PWR_CFG_1
+    TxPwrCfg1 tpc1;
+    status = ReadRegister(&tpc1);
+    CHECK_READ(TX_PWR_CFG_1, status);
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc1.set_tx_pwr_ofdm_24(CompensateTx(eeprom_val & 0xff));
+    tpc1.set_tx_pwr_ofdm_48(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc1.set_tx_pwr_mcs_0(CompensateTx(eeprom_val & 0xff));
+    tpc1.set_tx_pwr_mcs_2(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = WriteRegister(tpc1);
+    CHECK_WRITE(TX_PWR_CFG_1, status);
+
+    // TX_PWR_CFG_2
+    TxPwrCfg2 tpc2;
+    status = ReadRegister(&tpc2);
+    CHECK_READ(TX_PWR_CFG_2, status);
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc2.set_tx_pwr_mcs_4(CompensateTx(eeprom_val & 0xff));
+    tpc2.set_tx_pwr_mcs_6(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc2.set_tx_pwr_mcs_8(CompensateTx(eeprom_val & 0xff));
+    tpc2.set_tx_pwr_mcs_10(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = WriteRegister(tpc2);
+    CHECK_WRITE(TX_PWR_CFG_2, status);
+
+    // TX_PWR_CFG_3
+    TxPwrCfg3 tpc3;
+    status = ReadRegister(&tpc3);
+    CHECK_READ(TX_PWR_CFG_3, status);
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc3.set_tx_pwr_mcs_12(CompensateTx(eeprom_val & 0xff));
+    tpc3.set_tx_pwr_mcs_14(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc3.set_tx_pwr_stbc_0(CompensateTx(eeprom_val & 0xff));
+    tpc3.set_tx_pwr_stbc_2(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = WriteRegister(tpc3);
+    CHECK_WRITE(TX_PWR_CFG_3, status);
+
+    // TX_PWR_CFG_4
+    TxPwrCfg4 tpc4;
+
+    status = ReadEepromField(EEPROM_TXPOWER_BYRATE + offset++, &eeprom_val);
+    CHECK_READ(EEPROM_TXPOWER, status);
+
+    tpc4.set_tx_pwr_stbc_4(CompensateTx(eeprom_val & 0xff));
+    tpc4.set_tx_pwr_stbc_6(CompensateTx((eeprom_val >> 8) & 0xff));
+
+    status = WriteRegister(tpc4);
+    CHECK_WRITE(TX_PWR_CFG_4, status);
+
+    return NO_ERROR;
+}
+
 template <typename R>
 mx_status_t Device::BusyWait(R* reg, std::function<bool()> pred, std::chrono::microseconds delay) {
     mx_status_t status;
@@ -2032,7 +2156,11 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
         return status;
     }
 
-    // TODO: configure tx power
+    status = ConfigureTxPower(chan->second);
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not configure tx power\n");
+        return status;
+    }
 
     // TODO: configure retry limit (move this)
     TxRtyCfg trc;
@@ -2112,7 +2240,11 @@ mx_status_t Device::WlanSetChannel(uint32_t options, wlan_channel_t* chan) {
     if (channel == channels_.end()) {
         return ERR_NOT_FOUND;
     }
-    return ConfigureChannel(channel->second);
+    auto status = ConfigureChannel(channel->second);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    return ConfigureTxPower(channel->second);
 }
 
 void Device::DdkUnbind(mx_device_t* device) {

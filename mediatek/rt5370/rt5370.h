@@ -47,6 +47,10 @@ constexpr uint16_t SHARED_KEY_MODE_BASE = 0x7000;
 // B/G min/max TX power
 constexpr uint16_t kMinTxPower = 0;
 constexpr uint16_t kMaxTxPower = 31;
+// EIRP max power
+constexpr uint16_t kEirpMaxPower = 0x50;
+// TX compensation max power
+constexpr uint16_t kTxCompMaxPower = 0x0c;
 
 // Registers
 
@@ -322,6 +326,44 @@ class AutoWakeupCfg : public Register<0x1208> {
     BIT_FIELD(wakeup_lead_time, 0, 8);
     BIT_FIELD(sleep_tbtt_num, 8, 7);
     BIT_FIELD(auto_wakeup_en, 15, 1);
+};
+
+class TxPwrCfg0 : public Register<0x1314> {
+  public:
+    BIT_FIELD(tx_pwr_cck_1, 0, 8);
+    BIT_FIELD(tx_pwr_cck_5, 8, 8);
+    BIT_FIELD(tx_pwr_ofdm_6, 16, 8);
+    BIT_FIELD(tx_pwr_ofdm_12, 24, 8);
+};
+
+class TxPwrCfg1 : public Register<0x1318> {
+  public:
+    BIT_FIELD(tx_pwr_ofdm_24, 0, 8);
+    BIT_FIELD(tx_pwr_ofdm_48, 8, 8);
+    BIT_FIELD(tx_pwr_mcs_0, 16, 8);
+    BIT_FIELD(tx_pwr_mcs_2, 24, 8);
+};
+
+class TxPwrCfg2 : public Register<0x131c> {
+  public:
+    BIT_FIELD(tx_pwr_mcs_4, 0, 8);
+    BIT_FIELD(tx_pwr_mcs_6, 8, 8);
+    BIT_FIELD(tx_pwr_mcs_8, 16, 8);
+    BIT_FIELD(tx_pwr_mcs_10, 24, 8);
+};
+
+class TxPwrCfg3 : public Register<0x1320> {
+  public:
+    BIT_FIELD(tx_pwr_mcs_12, 0, 8);
+    BIT_FIELD(tx_pwr_mcs_14, 8, 8);
+    BIT_FIELD(tx_pwr_stbc_0, 16, 8);
+    BIT_FIELD(tx_pwr_stbc_2, 24, 8);
+};
+
+class TxPwrCfg4 : public Register<0x1324> {
+  public:
+    BIT_FIELD(tx_pwr_stbc_4, 0, 8);
+    BIT_FIELD(tx_pwr_stbc_6, 8, 8);
 };
 
 class TxPinCfg : public Register<0x1328> {
@@ -618,8 +660,10 @@ constexpr uint16_t EEPROM_RSSI_A = 0x0025;
 constexpr uint16_t EEPROM_RSSI_A2 = 0x0026;
 constexpr uint16_t EEPROM_TXPOWER_BG1 = 0x0029;
 constexpr uint16_t EEPROM_TXPOWER_BG2 = 0x0030;
+constexpr uint16_t EEPROM_TXPOWER_BYRATE = 0x006f;
 constexpr uint16_t EEPROM_BBP_START = 0x0078;
 
+constexpr size_t EEPROM_TXPOWER_BYRATE_SIZE = 9;
 constexpr size_t EEPROM_BBP_SIZE = 16;
 
 class EepromNicConf0 : public EepromField<0x001a> {
@@ -669,6 +713,22 @@ class EepromRssiBg2 : public EepromField<0x0024> {
   public:
     BIT_FIELD(offset2, 0, 8);
     BIT_FIELD(lna_a1, 8, 8);
+};
+
+class EepromEirpMaxTxPower : public EepromField<0x0027> {
+  public:
+    BIT_FIELD(power_2g, 0, 8);
+    BIT_FIELD(power_5g, 8, 8);
+};
+
+class EepromTxPowerDelta : public EepromField<0x0028> {
+  public:
+    BIT_FIELD(value_2g, 0, 6);
+    BIT_FIELD(type_2g, 6, 1);
+    BIT_FIELD(enable_2g, 7, 1);
+    BIT_FIELD(value_5g, 8, 6);
+    BIT_FIELD(type_5g, 14, 1);
+    BIT_FIELD(enable_5g, 15, 1);
 };
 
 // Host to MCU communication

@@ -91,6 +91,7 @@ class Device {
     mx_status_t SetupInterface();
 
     mx_status_t ConfigureChannel(const Channel& channel);
+    mx_status_t ConfigureTxPower(const Channel& channel);
 
     template <typename R>
     mx_status_t BusyWait(R* reg, std::function<bool()> pred,

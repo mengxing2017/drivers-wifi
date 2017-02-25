@@ -46,6 +46,7 @@ class Register : public BitField<uint16_t, uint32_t, A> {
 template<uint16_t A>
 class EepromField : public BitField<uint16_t, uint16_t, A> {
   public:
+    constexpr explicit EepromField(uint16_t val) : BitField<uint16_t, uint16_t, A>(val) {}
     constexpr EepromField() = default;
 };
 
