@@ -98,7 +98,8 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
 }
 
 void Device::Send(uint32_t options, void* data, size_t length) {
-    wlanmac_ops_->tx(wlanmac_device_, options, data, length);
+    // TODO: prepare wlan mac header based on eth headers
+    //wlanmac_ops_->tx(wlanmac_device_, options, data, length);
 }
 
 ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_channel) {
@@ -109,8 +110,20 @@ ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_cha
     }
 
     std::lock_guard<std::mutex> guard(lock_);
+    // TODO: the idea of having several concurrent scans going on is flawed.
+    // This will need to be run through a state machine, and when there's a scan
+    // ongoing, the ioctl needs to return ESHOULDWAIT or something.
     scan_channels_.insert(std::move(chan[0]));
     *out_channel = chan[1].release();
+
+    std::printf("wlan scan on %u channels:", args->num_channels);
+    for (int i = 0; i < args->num_channels; i++) {
+        std::printf(" %u", args->channels[i]);
+    }
+    std::printf("\n");
+    std::printf("wlan scanning for up to %u time-units\n", args->max_channel_time);
+    // TODO: actual scanning code goes here. for now just passive scan on the
+    // current channel.
     return sizeof(mx_handle_t);
 }
 
@@ -143,6 +156,13 @@ void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint
             if (mf.body_len < 16) break;
             HandleBeacon(fc, &mf, flags);
             break;
+        case kProbeResponse:
+            std::printf("wlan probe response len=%zu\n", mf.body_len);
+            for (size_t i = 0; i < mf.body_len; i++) {
+                if (i % 16 == 15) std::printf("\n");
+                std::printf("%02x ", mf.body[i]);
+            }
+            std::printf("\n");
         default:
             break;
     }
@@ -244,6 +264,9 @@ ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, s
         if (in_len < sizeof(wlan_start_scan_args)) return ERR_INVALID_ARGS;
         if (out_len < sizeof(mx_handle_t)) return ERR_INVALID_ARGS;
         const wlan_start_scan_args* args = reinterpret_cast<const wlan_start_scan_args*>(in_buf);
+        if (in_len < sizeof(wlan_start_scan_args) + args->num_channels * sizeof(uint16_t)) {
+            return ERR_INVALID_ARGS;
+        }
         mx_handle_t* h = reinterpret_cast<mx_handle_t*>(out_buf);
         return dev->StartScan(args, h);
     }

@@ -68,8 +68,9 @@ int main(int argc, char* argv[]) {
 
     wlan_start_scan_args args = {};
     args.scan_type = WLAN_SCANTYPE_PASSIVE;
+    args.max_channel_time = 200u;
     mx_handle_t h;
-    auto status = ioctl_wlan_start_scan(fd, &args, &h);
+    auto status = ioctl_wlan_start_scan(fd, &args, sizeof(args), &h);
     if (status < 0) {
         std::cerr << "could not start scan: " << status << std::endl;
         return -1;
