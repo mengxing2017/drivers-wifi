@@ -1587,7 +1587,7 @@ mx_status_t Device::NormalModeSetup() {
         bbp138.set_tx_dac1(1);
     }
     status = WriteBbp(bbp138);
-    CHECK_WRITE(BBP138, status); 
+    CHECK_WRITE(BBP138, status);
 
     Rfcsr38 r38;
     status = ReadRfcsr(&r38);
@@ -2051,7 +2051,7 @@ done:
 }
 
 void Device::HandleTxComplete(iotxn_t* request) {
-    std::printf("rt5370::Device::HandleTxComplete\n");
+    std::printf("rt5370::Device::HandleTxComplete status=%d\n", request->status);
     if (request->status == ERR_REMOTE_CLOSED) {
         request->ops->release(request);
         return;
@@ -2217,6 +2217,47 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
 
     wlanmac_ifc_ = ifc;
     wlanmac_cookie_ = cookie;
+
+    // Send a probe request just for testing
+    uint8_t buf[4 + 16 + 24 + 11 + 3 /* L2 pad*/];
+    memset(buf, 0, sizeof(buf));
+    TxInfo ti;
+    ti.set_tx_pkt_length(16 + 24 + 11 + 3 /* L2 pad */);
+    ti.set_wiv(0);
+    ti.set_qsel(2);
+    ti.set_next_vld(0);
+    ti.set_tx_burst(0);
+
+    *(uint32_t*)buf = ti.val();
+
+    //Txwi0 txwi0;  // all fields are 0?
+    Txwi1 txwi1;
+    txwi1.set_wcid(0xff);
+    txwi1.set_mpdu_total_byte_count(24 + 11);
+    txwi1.set_tx_packet_id(10);
+
+    *((uint32_t*)(buf + 8)) = txwi1.val(); 
+
+    buf[20] = 0x40;
+    std::memset(buf + 24, 0xff, 6);
+    std::memcpy(buf + 30, mac_addr_, 6);
+
+    buf[46] = 0x01;
+    buf[47] = 7;
+    buf[48] = 2;
+    buf[49] = 4;
+    buf[50] = 11;
+    buf[51] = 22;
+    buf[52] = 12;
+    buf[53] = 18;
+    buf[54] = 72;
+
+    iotxn_t* req = free_write_reqs_.back();
+    free_write_reqs_.pop_back();
+    req->ops->copyto(req, buf, sizeof(buf), 0);
+    req->length = sizeof(buf);
+    iotxn_queue(usb_device_, req);
+
     return NO_ERROR;
 }
 

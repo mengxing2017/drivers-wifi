@@ -924,4 +924,50 @@ class Rxwi3 : public BitField<uint16_t, uint32_t, 4> {
     BIT_FIELD(snr1, 8, 8);
 };
 
+class TxInfo : public BitField<uint16_t, uint32_t, 0> {
+  public:
+    BIT_FIELD(tx_pkt_length, 0, 16);
+    BIT_FIELD(wiv, 24, 1);
+    BIT_FIELD(qsel, 25, 2);
+    BIT_FIELD(next_vld, 30, 1);
+    BIT_FIELD(tx_burst, 31, 1);
+};
+
+class Txwi0: public BitField<uint16_t, uint32_t, 0> {
+  public:
+    BIT_FIELD(frag, 0, 1);
+    BIT_FIELD(mmps, 1, 1);
+    BIT_FIELD(cfack, 2, 1);
+    BIT_FIELD(ts, 3, 1);
+    BIT_FIELD(ampdu, 4, 1);
+    BIT_FIELD(mpdu_density, 5, 3);
+    BIT_FIELD(txop, 8, 2);
+    BIT_FIELD(mcs, 16, 7);
+    BIT_FIELD(bw, 23, 1);
+    BIT_FIELD(sgi, 24, 1);
+    BIT_FIELD(stbc, 25, 2);
+    BIT_FIELD(ofdm, 30, 1);
+    BIT_FIELD(mimo, 31, 1);
+};
+
+class Txwi1 : public BitField<uint16_t, uint32_t, 1> {
+  public:
+    BIT_FIELD(ack, 0, 1);
+    BIT_FIELD(nseq, 1, 1);
+    BIT_FIELD(ba_win_size, 2, 6);
+    BIT_FIELD(wcid, 8, 8);
+    BIT_FIELD(mpdu_total_byte_count, 16, 12);
+    BIT_FIELD(tx_packet_id, 28, 4);
+};
+
+class Txwi2 : public BitField<uint16_t, uint32_t, 2> {
+  public:
+    BIT_FIELD(iv, 0, 32);
+};
+
+class Txwi3 : public BitField<uint16_t, uint32_t, 3> {
+  public:
+    BIT_FIELD(eiv, 0, 32);
+};
+
 }  // namespace rt5370
