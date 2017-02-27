@@ -2107,6 +2107,7 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
         req->cookie = this;
         iotxn_queue(usb_device_, req);
     }
+    // Only one TX queue for now
     auto tx_endpt = tx_endpts_.front();
     for (size_t i = 0; i < kWriteReqCount; i++) {
         auto* req = usb_alloc_iotxn(tx_endpt, kWriteBufSize, 0);
@@ -2219,11 +2220,11 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     wlanmac_cookie_ = cookie;
 
     // Send a probe request just for testing
-    uint8_t buf[4 + 16 + 24 + 11 + 3 /* L2 pad*/];
+    uint8_t buf[4 + 16 + 24 + 12 + 8 /* L2 pad*/];
     memset(buf, 0, sizeof(buf));
     TxInfo ti;
-    ti.set_tx_pkt_length(16 + 24 + 11 + 3 /* L2 pad */);
-    ti.set_wiv(0);
+    ti.set_tx_pkt_length(16 + 24 + 12 + 8 /* L2 pad */);
+    ti.set_wiv(1);
     ti.set_qsel(2);
     ti.set_next_vld(0);
     ti.set_tx_burst(0);
@@ -2232,8 +2233,7 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
 
     //Txwi0 txwi0;  // all fields are 0?
     Txwi1 txwi1;
-    txwi1.set_wcid(0xff);
-    txwi1.set_mpdu_total_byte_count(24 + 11);
+    txwi1.set_mpdu_total_byte_count(24 + 12);
     txwi1.set_tx_packet_id(10);
 
     *((uint32_t*)(buf + 8)) = txwi1.val(); 
@@ -2241,22 +2241,25 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     buf[20] = 0x40;
     std::memset(buf + 24, 0xff, 6);
     std::memcpy(buf + 30, mac_addr_, 6);
+    std::memset(buf + 36, 0xff, 6);
 
     buf[46] = 0x01;
-    buf[47] = 7;
+    buf[47] = 8;
     buf[48] = 2;
     buf[49] = 4;
     buf[50] = 11;
     buf[51] = 22;
     buf[52] = 12;
     buf[53] = 18;
-    buf[54] = 72;
+    buf[54] = 24;
+    buf[55] = 36;
 
     iotxn_t* req = free_write_reqs_.back();
     free_write_reqs_.pop_back();
     req->ops->copyto(req, buf, sizeof(buf), 0);
     req->length = sizeof(buf);
     iotxn_queue(usb_device_, req);
+    std::printf("rt5370 queued ProbeRequest\n");
 
     return NO_ERROR;
 }
