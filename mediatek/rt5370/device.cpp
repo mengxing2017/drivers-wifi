@@ -71,7 +71,8 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
   : driver_(driver),
     usb_device_(device),
     rx_endpt_(bulk_in),
-    tx_endpts_(std::move(bulk_out)) {
+    tx_endpts_(std::move(bulk_out)),
+    seqno_(1) {
     std::printf("rt5370::Device drv=%p dev=%p bulk_in=%u\n", driver_, usb_device_, rx_endpt_);
 
     channels_.insert({
@@ -2149,7 +2150,7 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
         std::printf("rt5370 could not stop rx queue\n");
         return status;
     }
-    auto chan = channels_.find(11);
+    auto chan = channels_.find(3);
     assert(chan != channels_.end());
     status = ConfigureChannel(chan->second);
     if (status != NO_ERROR) {
@@ -2220,10 +2221,10 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     wlanmac_cookie_ = cookie;
 
     // Send a probe request just for testing
-    uint8_t buf[4 + 16 + 24 + 12 + 8 /* L2 pad*/];
+    uint8_t buf[4 + 16 + 24 + 18 + 2 /* L2 pad*/];
     memset(buf, 0, sizeof(buf));
     TxInfo ti;
-    ti.set_tx_pkt_length(16 + 24 + 12 + 8 /* L2 pad */);
+    ti.set_tx_pkt_length(16 + 24 + 18 + 2 /* L2 pad */);
     ti.set_wiv(1);
     ti.set_qsel(2);
     ti.set_next_vld(0);
@@ -2233,7 +2234,7 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
 
     //Txwi0 txwi0;  // all fields are 0?
     Txwi1 txwi1;
-    txwi1.set_mpdu_total_byte_count(24 + 12);
+    txwi1.set_mpdu_total_byte_count(24 + 18);
     txwi1.set_tx_packet_id(10);
 
     *((uint32_t*)(buf + 8)) = txwi1.val(); 
@@ -2242,7 +2243,9 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     std::memset(buf + 24, 0xff, 6);
     std::memcpy(buf + 30, mac_addr_, 6);
     std::memset(buf + 36, 0xff, 6);
+    buf[43] = seqno_++;
 
+    // Supported rates
     buf[46] = 0x01;
     buf[47] = 8;
     buf[48] = 2;
@@ -2253,6 +2256,14 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     buf[53] = 18;
     buf[54] = 24;
     buf[55] = 36;
+
+    // Extended Supported Rates
+    buf[56] = 50;
+    buf[57] = 4;
+    buf[58] = 48;
+    buf[59] = 72;
+    buf[60] = 96;
+    buf[61] = 108;
 
     iotxn_t* req = free_write_reqs_.back();
     free_write_reqs_.pop_back();
