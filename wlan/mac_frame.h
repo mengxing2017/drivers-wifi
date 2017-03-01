@@ -112,7 +112,7 @@ struct MgmtFrame {
 struct Element {
     uint8_t id;
     uint8_t len;
-    uint8_t data[0];
+    uint8_t data[];
 }  __PACKED;
 
 enum ElementId : uint8_t {
@@ -159,5 +159,11 @@ struct Beacon {
     uint8_t supp_rates[8];
     // etc.
 };
+
+struct ProbeResponse {
+    uint64_t timestamp;
+    uint16_t beacon_interval;
+    CapabilityInfo cap;
+} __PACKED;
 
 }  // namespace wlan

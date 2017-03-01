@@ -4,7 +4,10 @@
 
 #include "wlan_device.h"
 
+#include <mx/time.h>
+
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <cstring>
 #include <cinttypes>
@@ -82,36 +85,8 @@ mx_status_t Device::Start(ethmac_ifc_t* ifc, void* cookie) {
         return status;
     }
 
-    // HACK: send a ProbeRequest immediately upon starting
-    uint8_t buf[42];
-    buf[0] = 0x40;
-    std::memset(buf + 4, 0xff, 6);
-    std::memcpy(buf + 10, mac_addr_, 6);
-    std::memset(buf + 16, 0xff, 6);
-    buf[23] = seqno_++;
-
-    // Supported rates
-    buf[26] = 0x01;
-    buf[27] = 8;
-    buf[28] = 2;
-    buf[29] = 4;
-    buf[30] = 11;
-    buf[31] = 22;
-    buf[32] = 12;
-    buf[33] = 18;
-    buf[34] = 24;
-    buf[35] = 36;
-
-    // Extended Supported Rates
-    buf[36] = 50;
-    buf[37] = 4;
-    buf[38] = 48;
-    buf[39] = 72;
-    buf[40] = 96;
-    buf[41] = 108;
-
-    wlanmac_ops_->tx(wlanmac_device_, 0, buf, sizeof(buf));
-   std::printf("wlan queued ProbeRequest\n");
+    sov_.thr = std::thread(&Device::JoinVermont, this);
+    sov_.thr.detach();
 
     return status;
 }
@@ -168,6 +143,121 @@ ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_cha
     return sizeof(mx_handle_t);
 }
 
+void Device::JoinVermont() {
+    // send ProbeRequests until we find Vermont
+    uint8_t probe_req[24 + 18];
+    std::memset(probe_req, 0, sizeof(probe_req));
+
+    FrameControl fc;
+    fc.set_type(kManagement);
+    fc.set_subtype(kProbeRequest);
+    *(uint16_t*)probe_req = fc.val();
+
+    std::memset(probe_req + 4, 0xff, 6);
+    std::memcpy(probe_req + 10, mac_addr_, 6);
+    std::memset(probe_req + 16, 0xff, 6);
+
+    // Used in the while loops
+    SequenceControl sc;
+
+    Element* supp_rates = reinterpret_cast<Element*>(probe_req + 26);
+    supp_rates->id = 1;
+    supp_rates->len = 8;
+    supp_rates->data[0] = 2;
+    supp_rates->data[1] = 4;
+    supp_rates->data[2] = 11;
+    supp_rates->data[3] = 22;
+    supp_rates->data[4] = 12;
+    supp_rates->data[5] = 18;
+    supp_rates->data[6] = 24;
+    supp_rates->data[7] = 36;
+
+    Element* ext_rates = reinterpret_cast<Element*>(probe_req + 36);
+    ext_rates->id = 50;
+    ext_rates->len = 4;
+    ext_rates->data[0] = 48;
+    ext_rates->data[1] = 72;
+    ext_rates->data[2] = 96;
+    ext_rates->data[3] = 108;
+
+    do {
+        // Always update sequence number before sending
+        sc.set_seq(seqno_++);
+        *(uint16_t*)(probe_req + 22) = sc.val();
+
+        wlanmac_ops_->tx(wlanmac_device_, 0, probe_req, sizeof(probe_req));
+        std::printf("wlan queued ProbeRequest\n");
+
+        std::unique_lock<std::mutex> lock(sov_.lock);
+        sov_.cv.wait_for(lock, std::chrono::seconds(1), [this]() { return sov_.frame_body.get() != nullptr; });
+
+        // process ProbeResponse
+        ProbeResponse* resp = reinterpret_cast<ProbeResponse*>(sov_.next_frame.body);
+        if (!resp->cap.ess()) continue;
+        if (resp->cap.privacy()) continue;
+        uint8_t* elms = sov_.next_frame.body + sizeof(ProbeResponse);
+        while (elms < sov_.next_frame.body + sov_.next_frame.body_len) {
+            Element* elem = reinterpret_cast<Element*>(elms);
+            if (elem->id == kSsid && elem->len == 7) {
+                if (std::memcmp(elem->data, "Vermont", 7) == 0) {
+                    std::memcpy(sov_.bssid, sov_.next_frame.addr2, ETH_MAC_SIZE);
+                    sov_.state = StateOfVermont::State::kAuthenticating;
+                    sov_.frame_body.release();
+                    break;
+                }
+            }
+            elms += elem->len;
+        }
+
+    } while (sov_.state == StateOfVermont::State::kProbing);
+
+    uint8_t auth_req[24 + 6];
+    std::memset(auth_req, 0, sizeof(auth_req));
+
+    fc.set_subtype(kAuthentication);
+    *(uint16_t*)auth_req = fc.val();
+
+    std::memcpy(auth_req + 4, sov_.bssid, 6);
+    std::memcpy(auth_req + 10, mac_addr_, 6);
+    std::memcpy(auth_req + 16, sov_.bssid, 6);
+
+    *(uint16_t*)(auth_req + 26) = 1;
+
+    do {
+        sc.set_seq(seqno_++);
+        *(uint16_t*)(auth_req + 22) = sc.val();
+
+        wlanmac_ops_->tx(wlanmac_device_, 0, auth_req, sizeof(auth_req));
+        std::printf("wlan queued Authentication\n");
+
+        std::unique_lock<std::mutex> lock(sov_.lock);
+        sov_.cv.wait_for(lock, std::chrono::seconds(1), [this]() { return sov_.frame_body.get() != nullptr; });
+
+        // process AuthenticationResponse
+        uint16_t auth_alg = *(uint16_t*)sov_.next_frame.body;
+        uint16_t auth_seq = *(uint16_t*)(sov_.next_frame.body + 2);
+        uint16_t auth_status = *(uint16_t*)(sov_.next_frame.body + 4);
+        if (auth_alg != 0 || auth_seq != 2 || auth_status != 0) {
+            std::printf("auth failure\n");
+        } else {
+            sov_.state = StateOfVermont::State::kAssociating;
+            sov_.frame_body.release();
+        }
+    } while (sov_.state == StateOfVermont::State::kAuthenticating);
+        
+    uint8_t assoc_req[24 + 22];
+    std::memset(assoc_req, 0, sizeof(assoc_req));
+
+    fc.set_subtype(kAssociationRequest);
+    *(uint16_t*)assoc_req = fc.val();
+
+    std::memcpy(assoc_req + 4, sov_.bssid, 6);
+    std::memcpy(assoc_req + 10, mac_addr_, 6);
+    std::memcpy(assoc_req + 16, sov_.bssid, 6);
+
+    // TODO: capabilities, listen interval, ssid, supported rates
+}
+
 void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags) {
     if (length < 26) {
         return;
@@ -198,12 +288,22 @@ void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint
             HandleBeacon(fc, &mf, flags);
             break;
         case kProbeResponse:
-            std::printf("wlan probe response len=%zu\n", mf.body_len);
+        case kAuthentication:
+            std::printf("wlan response subtype=%02x len=%zu\n", fc.subtype(), mf.body_len);
             for (size_t i = 0; i < mf.body_len; i++) {
                 if (i % 16 == 15) std::printf("\n");
                 std::printf("%02x ", mf.body[i]);
             }
             std::printf("\n");
+            {
+                std::lock_guard<std::mutex> guard(sov_.lock);
+                sov_.next_frame = std::move(mf);
+                sov_.frame_body.reset(new uint8_t[mf.body_len]);
+                std::memcpy(sov_.frame_body.get(), mf.body, mf.body_len);
+                sov_.next_frame.body = sov_.frame_body.get();
+            }
+            sov_.cv.notify_one();
+            break;
         default:
             break;
     }

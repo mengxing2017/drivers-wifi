@@ -14,7 +14,10 @@
 #include <mx/channel.h>
 
 #include <atomic>
+#include <condition_variable>
+#include <memory>
 #include <mutex>
+#include <thread>
 #include <unistd.h>  // ssize_t
 #include <unordered_set>
 
@@ -41,6 +44,7 @@ class Device {
     void Send(uint32_t options, void* data, size_t length);
 
     ssize_t StartScan(const wlan_start_scan_args* args, mx_handle_t* out_channel);
+    void JoinVermont();
 
     void HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags);
     void HandleBeacon(FrameControl fc, MgmtFrame* mf, uint32_t flags);
@@ -89,6 +93,28 @@ class Device {
         std::size_t operator()(const mx::channel& ch) const;
     };
     std::unordered_set<mx::channel, ChannelHasher> scan_channels_;
+
+    // Hardcoded state machinery for joining an open network named "Vermont"
+    struct StateOfVermont {
+        std::thread thr;
+        std::mutex lock;
+
+        enum class State {
+            kProbing,
+            kAuthenticating,
+            kAssociating,
+            kJoined,
+        };
+
+        State state = State::kProbing;
+        std::condition_variable cv;
+        MgmtFrame next_frame;
+        std::unique_ptr<uint8_t[]> frame_body;
+        size_t frame_body_len = 0;
+
+        uint8_t bssid[6];
+    };
+    StateOfVermont sov_;
 };
 
 }  // namespace wlan
