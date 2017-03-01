@@ -71,8 +71,7 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, uint8_t bulk_in,
   : driver_(driver),
     usb_device_(device),
     rx_endpt_(bulk_in),
-    tx_endpts_(std::move(bulk_out)),
-    seqno_(1) {
+    tx_endpts_(std::move(bulk_out)) {
     std::printf("rt5370::Device drv=%p dev=%p bulk_in=%u\n", driver_, usb_device_, rx_endpt_);
 
     channels_.insert({
@@ -2220,58 +2219,6 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     wlanmac_ifc_ = ifc;
     wlanmac_cookie_ = cookie;
 
-    // Send a probe request just for testing
-    uint8_t buf[4 + 16 + 24 + 18 + 2 /* L2 pad*/];
-    memset(buf, 0, sizeof(buf));
-    TxInfo ti;
-    ti.set_tx_pkt_length(16 + 24 + 18 + 2 /* L2 pad */);
-    ti.set_wiv(1);
-    ti.set_qsel(2);
-    ti.set_next_vld(0);
-    ti.set_tx_burst(0);
-
-    *(uint32_t*)buf = ti.val();
-
-    //Txwi0 txwi0;  // all fields are 0?
-    Txwi1 txwi1;
-    txwi1.set_mpdu_total_byte_count(24 + 18);
-    txwi1.set_tx_packet_id(10);
-
-    *((uint32_t*)(buf + 8)) = txwi1.val(); 
-
-    buf[20] = 0x40;
-    std::memset(buf + 24, 0xff, 6);
-    std::memcpy(buf + 30, mac_addr_, 6);
-    std::memset(buf + 36, 0xff, 6);
-    buf[43] = seqno_++;
-
-    // Supported rates
-    buf[46] = 0x01;
-    buf[47] = 8;
-    buf[48] = 2;
-    buf[49] = 4;
-    buf[50] = 11;
-    buf[51] = 22;
-    buf[52] = 12;
-    buf[53] = 18;
-    buf[54] = 24;
-    buf[55] = 36;
-
-    // Extended Supported Rates
-    buf[56] = 50;
-    buf[57] = 4;
-    buf[58] = 48;
-    buf[59] = 72;
-    buf[60] = 96;
-    buf[61] = 108;
-
-    iotxn_t* req = free_write_reqs_.back();
-    free_write_reqs_.pop_back();
-    req->ops->copyto(req, buf, sizeof(buf), 0);
-    req->length = sizeof(buf);
-    iotxn_queue(usb_device_, req);
-    std::printf("rt5370 queued ProbeRequest\n");
-
     return NO_ERROR;
 }
 
@@ -2284,7 +2231,51 @@ void Device::WlanStop() {
 }
 
 void Device::WlanTx(uint32_t options, void* data, size_t len) {
-    // TODO
+    iotxn_t* req = nullptr;
+    while (req == nullptr) {
+        {
+            std::lock_guard<std::mutex> guard(lock_);
+            if (!free_write_reqs_.empty()) {
+                req = free_write_reqs_.back();
+                free_write_reqs_.pop_back();
+            }
+        }
+        if (req == nullptr) {
+            // TODO: drop packets or sleep or something else?
+            mxsleep(1ms); 
+        }
+    }
+    size_t offset = 0;
+
+    TxInfo ti;
+    size_t pkt_len = (16 + len + 7) & (~7);
+    ti.set_tx_pkt_length(pkt_len);
+    // TODO: set these more appropriately
+    ti.set_wiv(1);
+    ti.set_qsel(2);
+    auto ti_val = ti.val();
+    req->ops->copyto(req, &ti_val, sizeof(ti_val), offset);
+    offset += sizeof(ti_val);
+
+    Txwi0 txwi0;
+    txwi0.set_ofdm(1);
+    auto txwi0_val = txwi0.val();
+    req->ops->copyto(req, &txwi0_val, sizeof(txwi0_val), offset);
+    offset += sizeof(txwi0_val);
+
+    Txwi1 txwi1;
+    txwi1.set_mpdu_total_byte_count(pkt_len - 16);
+    txwi1.set_tx_packet_id(10);
+    auto txwi1_val = txwi1.val();
+    req->ops->copyto(req, &txwi1_val, sizeof(txwi1_val), offset);
+    offset += sizeof(txwi1_val);
+
+    // TODO: fill out txwi2 and txwi3 when we do encryption
+    offset += 8;
+
+    req->ops->copyto(req, data, len, offset);
+    req->length = pkt_len + 4;
+    iotxn_queue(usb_device_, req);
 }
 
 mx_status_t Device::WlanSetChannel(uint32_t options, wlan_channel_t* chan) {

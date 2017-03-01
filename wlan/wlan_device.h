@@ -13,6 +13,7 @@
 #include <magenta/device/wlan.h>
 #include <mx/channel.h>
 
+#include <atomic>
 #include <mutex>
 #include <unistd.h>  // ssize_t
 #include <unordered_set>
@@ -76,6 +77,12 @@ class Device {
     mx_protocol_device_t device_ops_;
 
     std::mutex lock_;
+
+    // MAC address (cached)
+    uint8_t mac_addr_[6];
+
+    // MAC sequence number
+    std::atomic_uint16_t seqno_;
 
     // TODO: put this somewhere general
     struct ChannelHasher {

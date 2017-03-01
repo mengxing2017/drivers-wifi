@@ -15,7 +15,8 @@
 namespace wlan {
 
 Device::Device(mx_driver_t* driver, mx_device_t* device, wlanmac_protocol_t* wlanmac_ops)
-  : driver_(driver), wlanmac_device_(device), wlanmac_ops_(wlanmac_ops) {
+  : driver_(driver), wlanmac_device_(device), wlanmac_ops_(wlanmac_ops),
+    seqno_(1) {
     std::memset(&driver_, 0, sizeof(driver_));
 }
 
@@ -61,19 +62,58 @@ mx_status_t Device::Release() {
 }
 
 mx_status_t Device::Query(uint32_t options, ethmac_info_t* info) {
+    std::printf("wlan query\n");
     auto status = wlanmac_ops_->query(wlanmac_device_, options, info);
     if (status != NO_ERROR) {
         return status;
     }
+    std::memcpy(mac_addr_, info->mac, ETH_MAC_SIZE);
     // Make sure this device is reported as a wlan device
     info->features |= ETHMAC_FEATURE_WLAN;
     return NO_ERROR;
 }
 
 mx_status_t Device::Start(ethmac_ifc_t* ifc, void* cookie) {
+    std::printf("wlan start\n");
     ethmac_ifc_ = ifc;
     ethmac_cookie_ = cookie;
-    return wlanmac_ops_->start(wlanmac_device_, &wlanmac_ifc_, this);
+    auto status = wlanmac_ops_->start(wlanmac_device_, &wlanmac_ifc_, this);
+    if (status != NO_ERROR) {
+        return status;
+    }
+
+    // HACK: send a ProbeRequest immediately upon starting
+    uint8_t buf[42];
+    buf[0] = 0x40;
+    std::memset(buf + 4, 0xff, 6);
+    std::memcpy(buf + 10, mac_addr_, 6);
+    std::memset(buf + 16, 0xff, 6);
+    buf[23] = seqno_++;
+
+    // Supported rates
+    buf[26] = 0x01;
+    buf[27] = 8;
+    buf[28] = 2;
+    buf[29] = 4;
+    buf[30] = 11;
+    buf[31] = 22;
+    buf[32] = 12;
+    buf[33] = 18;
+    buf[34] = 24;
+    buf[35] = 36;
+
+    // Extended Supported Rates
+    buf[36] = 50;
+    buf[37] = 4;
+    buf[38] = 48;
+    buf[39] = 72;
+    buf[40] = 96;
+    buf[41] = 108;
+
+    wlanmac_ops_->tx(wlanmac_device_, 0, buf, sizeof(buf));
+   std::printf("wlan queued ProbeRequest\n");
+
+    return status;
 }
 
 void Device::Stop() {
@@ -99,6 +139,7 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
 
 void Device::Send(uint32_t options, void* data, size_t length) {
     // TODO: prepare wlan mac header based on eth headers
+    // TODO: make sure we're associated and ready to send data
     //wlanmac_ops_->tx(wlanmac_device_, options, data, length);
 }
 

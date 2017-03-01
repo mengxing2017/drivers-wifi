@@ -11,7 +11,6 @@
 #include <ddk/protocol/wlan.h>
 
 #include <array>
-#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -151,7 +150,6 @@ class Device {
     std::unordered_map<int, Channel> channels_;
     uint16_t lna_gain_ = 0;
 
-    std::atomic_uint16_t seqno_;
     std::mutex lock_;
     std::vector<iotxn_t*> free_write_reqs_;
 };
