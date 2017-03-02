@@ -2149,7 +2149,7 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
         std::printf("rt5370 could not stop rx queue\n");
         return status;
     }
-    auto chan = channels_.find(3);
+    auto chan = channels_.find(6);
     assert(chan != channels_.end());
     status = ConfigureChannel(chan->second);
     if (status != NO_ERROR) {

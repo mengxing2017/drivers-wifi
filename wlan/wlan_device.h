@@ -113,6 +113,7 @@ class Device {
         size_t frame_body_len = 0;
 
         uint8_t bssid[6];
+        uint16_t aid;
     };
     StateOfVermont sov_;
 };

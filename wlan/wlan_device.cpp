@@ -107,15 +107,79 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
         case kManagement:
             HandleMgmtFrame(fc, bytes + 2, length - 2, flags);
             break;
+        case kData: {
+            std::printf("wlan recv data frame len=%zu\n", length);
+            if (fc.subtype() != 0) {
+                std::printf("wlan unsupported data subtype %02x\n", fc.subtype());
+                break;
+            }
+            if (length < 24) {
+                std::printf("wlan short packet\n");
+                break;
+            }
+            uint8_t* body = static_cast<uint8_t*>(data);
+            for (size_t i = 0; i < length; i++) {
+                std::printf("%02x ", body[i]);
+                if (i % 16 == 15) std::printf("\n");
+            }
+            std::printf("\n");
+            uint8_t* d = static_cast<uint8_t*>(data);
+            std::unique_ptr<uint8_t[]> pkt(new uint8_t[length - 32 + 14]);
+            std::memcpy(pkt.get(), d + 4, ETH_MAC_SIZE);
+            std::memcpy(pkt.get() + 6, d + 16, ETH_MAC_SIZE);
+            std::memcpy(pkt.get() + 12, d + 30, 2);
+            std::memcpy(pkt.get() + 14, d + 32, length - 32);
+            ethmac_ifc_->recv(ethmac_cookie_, pkt.get(), length - 32 + 14, 0);
+            break;
+        }
         default:
             break;
     }
 }
 
 void Device::Send(uint32_t options, void* data, size_t length) {
+    if (sov_.state != StateOfVermont::State::kJoined) return;
+    uint8_t* pkt = static_cast<uint8_t*>(data);
+
     // TODO: prepare wlan mac header based on eth headers
     // TODO: make sure we're associated and ready to send data
-    //wlanmac_ops_->tx(wlanmac_device_, options, data, length);
+    std::unique_ptr<uint8_t[]> buf(new uint8_t[24 + 8 + length - 14]);
+    std::memset(buf.get(), 0, 24 + 8 + length - 14);
+    FrameControl fc;
+    fc.set_type(kData);
+    fc.set_to_ds(1);
+    *(uint16_t*)(buf.get()) = fc.val();
+
+    std::memcpy(buf.get() + 4, sov_.bssid, ETH_MAC_SIZE);
+    std::memcpy(buf.get() + 10, pkt + 6, ETH_MAC_SIZE);
+    // Destination address is at the beginning of the mac frame
+    std::memcpy(buf.get() + 16, pkt, ETH_MAC_SIZE);
+
+    SequenceControl sc;
+    sc.set_seq(seqno_++);
+
+    *(uint16_t*)(buf.get() + 22) = sc.val();
+
+    // LLC header (hack)
+    buf[24] = 0xaa;
+    buf[25] = 0xaa;
+    buf[26] = 0x03;
+    buf[27] = 0;
+    buf[28] = 0;
+    buf[29] = 0;
+    buf[30] = pkt[12];
+    buf[31] = pkt[13];
+
+    std::memcpy(buf.get() + 32, pkt + 14, length - 14);
+
+    std::printf("wlan send data frame len=%zu\n", length + 24);
+    for (size_t i = 0; i < length + 24; i++) {
+        std::printf("%02x ", buf[i]);
+        if (i % 16 == 15) std::printf("\n");
+    }
+    std::printf("\n");
+
+    wlanmac_ops_->tx(wlanmac_device_, options, buf.get(), length + 24);
 }
 
 ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_channel) {
@@ -189,7 +253,10 @@ void Device::JoinVermont() {
         std::printf("wlan queued ProbeRequest\n");
 
         std::unique_lock<std::mutex> lock(sov_.lock);
-        sov_.cv.wait_for(lock, std::chrono::seconds(1), [this]() { return sov_.frame_body.get() != nullptr; });
+        auto ret = sov_.cv.wait_for(lock, std::chrono::seconds(1),
+                [this]() { return sov_.frame_body.get() != nullptr; });
+        if (!ret) continue;
+        if (sov_.next_frame.body_len < sizeof(ProbeResponse)) continue;
 
         // process ProbeResponse
         ProbeResponse* resp = reinterpret_cast<ProbeResponse*>(sov_.next_frame.body);
@@ -201,13 +268,16 @@ void Device::JoinVermont() {
             if (elem->id == kSsid && elem->len == 7) {
                 if (std::memcmp(elem->data, "Vermont", 7) == 0) {
                     std::memcpy(sov_.bssid, sov_.next_frame.addr2, ETH_MAC_SIZE);
+                    std::printf("wlan bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                            sov_.bssid[0], sov_.bssid[1], sov_.bssid[2],
+                            sov_.bssid[3], sov_.bssid[4], sov_.bssid[5]);
                     sov_.state = StateOfVermont::State::kAuthenticating;
-                    sov_.frame_body.release();
                     break;
                 }
             }
             elms += elem->len;
         }
+        sov_.frame_body.release();
 
     } while (sov_.state == StateOfVermont::State::kProbing);
 
@@ -231,7 +301,9 @@ void Device::JoinVermont() {
         std::printf("wlan queued Authentication\n");
 
         std::unique_lock<std::mutex> lock(sov_.lock);
-        sov_.cv.wait_for(lock, std::chrono::seconds(1), [this]() { return sov_.frame_body.get() != nullptr; });
+        auto ret = sov_.cv.wait_for(lock, std::chrono::seconds(1),
+                [this]() { return sov_.frame_body.get() != nullptr; });
+        if (!ret) continue;
 
         // process AuthenticationResponse
         uint16_t auth_alg = *(uint16_t*)sov_.next_frame.body;
@@ -241,11 +313,11 @@ void Device::JoinVermont() {
             std::printf("auth failure\n");
         } else {
             sov_.state = StateOfVermont::State::kAssociating;
-            sov_.frame_body.release();
         }
+        sov_.frame_body.release();
     } while (sov_.state == StateOfVermont::State::kAuthenticating);
         
-    uint8_t assoc_req[24 + 22];
+    uint8_t assoc_req[24 + 25];
     std::memset(assoc_req, 0, sizeof(assoc_req));
 
     fc.set_subtype(kAssociationRequest);
@@ -255,7 +327,66 @@ void Device::JoinVermont() {
     std::memcpy(assoc_req + 10, mac_addr_, 6);
     std::memcpy(assoc_req + 16, sov_.bssid, 6);
 
-    // TODO: capabilities, listen interval, ssid, supported rates
+    // Capabilities (2 octets) field is zero
+    CapabilityInfo assoc_cap;
+    assoc_cap.set_ess(1);
+    //assoc_cap.set_short_slot_time(1);
+    *(uint16_t*)(assoc_req + 24) = assoc_cap.val();
+
+    // Listen interval (2 octets) field is zero (no power save)
+
+    Element* ssid = reinterpret_cast<Element*>(assoc_req + 28);
+    ssid->id = kSsid;
+    ssid->len = 7;
+    std::memcpy(ssid->data, "Vermont", 7);
+
+    supp_rates = reinterpret_cast<Element*>(assoc_req + 37);
+    supp_rates->id = 1;
+    supp_rates->len = 8;
+    supp_rates->data[0] = 2;
+    supp_rates->data[1] = 4;
+    supp_rates->data[2] = 11;
+    supp_rates->data[3] = 22;
+    supp_rates->data[4] = 12;
+    supp_rates->data[5] = 18;
+    supp_rates->data[6] = 24;
+    supp_rates->data[7] = 36;
+
+    ext_rates = reinterpret_cast<Element*>(assoc_req + 47);
+    ext_rates->id = 50;
+    ext_rates->len = 4;
+    ext_rates->data[0] = 48;
+    ext_rates->data[1] = 72;
+    ext_rates->data[2] = 96;
+    ext_rates->data[3] = 108;
+
+    do {
+        sc.set_seq(seqno_++);
+        *(uint16_t*)(assoc_req + 22) = sc.val();
+
+        wlanmac_ops_->tx(wlanmac_device_, 0, assoc_req, sizeof(assoc_req));
+        std::printf("wlan queued Association\n");
+
+        std::unique_lock<std::mutex> lock(sov_.lock);
+        auto ret = sov_.cv.wait_for(lock, std::chrono::seconds(1),
+                [this]() { return sov_.frame_body.get() != nullptr; });
+        if (!ret) continue;
+
+        // process AssociationResponse
+        CapabilityInfo cap;
+        cap.set_val(*(uint16_t*)sov_.next_frame.body);
+        uint16_t assoc_status = *(uint16_t*)(sov_.next_frame.body + 2);
+        uint16_t assoc_aid = *(uint16_t*)(sov_.next_frame.body + 4);
+        if (assoc_status != 0) {
+            std::printf("assoc failure %u\n", assoc_status);
+        } else {
+            sov_.state = StateOfVermont::State::kJoined;
+            sov_.aid = assoc_aid;
+        }
+        sov_.frame_body.release();
+        mx_nanosleep(1000000000ull);
+    } while (sov_.state == StateOfVermont::State::kAssociating);
+    std::printf("wlan joined Vermont aid=%u\n", sov_.aid);
 }
 
 void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags) {
@@ -289,10 +420,11 @@ void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint
             break;
         case kProbeResponse:
         case kAuthentication:
+        case kAssociationResponse:
             std::printf("wlan response subtype=%02x len=%zu\n", fc.subtype(), mf.body_len);
             for (size_t i = 0; i < mf.body_len; i++) {
-                if (i % 16 == 15) std::printf("\n");
                 std::printf("%02x ", mf.body[i]);
+                if (i % 16 == 15) std::printf("\n");
             }
             std::printf("\n");
             {
