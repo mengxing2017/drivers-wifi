@@ -2051,7 +2051,7 @@ done:
 }
 
 void Device::HandleTxComplete(iotxn_t* request) {
-    std::printf("rt5370::Device::HandleTxComplete status=%d\n", request->status);
+    //std::printf("rt5370::Device::HandleTxComplete status=%d\n", request->status);
     if (request->status == ERR_REMOTE_CLOSED) {
         request->ops->release(request);
         return;

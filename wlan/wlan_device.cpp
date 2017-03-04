@@ -108,21 +108,21 @@ void Device::Recv(void* data, size_t length, uint32_t flags) {
             HandleMgmtFrame(fc, bytes + 2, length - 2, flags);
             break;
         case kData: {
-            std::printf("wlan recv data frame len=%zu\n", length);
+            //std::printf("wlan recv data frame len=%zu\n", length);
             if (fc.subtype() != 0) {
-                std::printf("wlan unsupported data subtype %02x\n", fc.subtype());
+                //std::printf("wlan unsupported data subtype %02x\n", fc.subtype());
                 break;
             }
             if (length < 24) {
                 std::printf("wlan short packet\n");
                 break;
             }
-            uint8_t* body = static_cast<uint8_t*>(data);
-            for (size_t i = 0; i < length; i++) {
-                std::printf("%02x ", body[i]);
-                if (i % 16 == 15) std::printf("\n");
-            }
-            std::printf("\n");
+            //uint8_t* body = static_cast<uint8_t*>(data);
+            //for (size_t i = 0; i < length; i++) {
+            //    std::printf("%02x ", body[i]);
+            //    if (i % 16 == 15) std::printf("\n");
+            //}
+            //std::printf("\n");
             uint8_t* d = static_cast<uint8_t*>(data);
             std::unique_ptr<uint8_t[]> pkt(new uint8_t[length - 32 + 14]);
             std::memcpy(pkt.get(), d + 4, ETH_MAC_SIZE);
@@ -172,12 +172,12 @@ void Device::Send(uint32_t options, void* data, size_t length) {
 
     std::memcpy(buf.get() + 32, pkt + 14, length - 14);
 
-    std::printf("wlan send data frame len=%zu\n", length + 24);
-    for (size_t i = 0; i < length + 24; i++) {
-        std::printf("%02x ", buf[i]);
-        if (i % 16 == 15) std::printf("\n");
-    }
-    std::printf("\n");
+    //std::printf("wlan send data frame len=%zu\n", length + 24);
+    //for (size_t i = 0; i < length + 24; i++) {
+    //    std::printf("%02x ", buf[i]);
+    //    if (i % 16 == 15) std::printf("\n");
+    //}
+    //std::printf("\n");
 
     wlanmac_ops_->tx(wlanmac_device_, options, buf.get(), length + 24);
 }
