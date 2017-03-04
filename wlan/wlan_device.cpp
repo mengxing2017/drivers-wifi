@@ -376,7 +376,7 @@ void Device::JoinVermont() {
         CapabilityInfo cap;
         cap.set_val(*(uint16_t*)sov_.next_frame.body);
         uint16_t assoc_status = *(uint16_t*)(sov_.next_frame.body + 2);
-        uint16_t assoc_aid = *(uint16_t*)(sov_.next_frame.body + 4);
+        uint16_t assoc_aid = *(uint16_t*)(sov_.next_frame.body + 4) & 0x01ff;
         if (assoc_status != 0) {
             std::printf("assoc failure %u\n", assoc_status);
         } else {
