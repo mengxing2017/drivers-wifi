@@ -99,6 +99,44 @@ Device::~Device() {
     }
 }
 
+mx_protocol_device_t Device::device_ops_ = {
+    .get_protocol = nullptr,
+    .open = nullptr,
+    .openat = nullptr,
+    .close = nullptr,
+    .unbind = [](mx_device_t* dev) {
+        static_cast<Device*>(dev->ctx)->Unbind();
+    },
+    .release = [](mx_device_t* dev) {
+        return static_cast<Device*>(dev->ctx)->Release();
+    },
+    .read = nullptr,
+    .write = nullptr,
+    .iotxn_queue = nullptr,
+    .get_size = nullptr,
+    .ioctl = nullptr,
+    .suspend = nullptr,
+    .resume = nullptr,
+};
+
+wlanmac_protocol_t Device::wlanmac_ops_ = {
+    .query = [](mx_device_t* dev, uint32_t options, ethmac_info_t* info) {
+        return static_cast<Device*>(dev->ctx)->WlanQuery(options, info);
+    },
+    .start = [](mx_device_t* dev, wlanmac_ifc_t* ifc, void* cookie) {
+        return static_cast<Device*>(dev->ctx)->WlanStart(ifc, cookie);
+    },
+    .stop = [](mx_device_t* dev) {
+        static_cast<Device*>(dev->ctx)->WlanStop();
+    },
+    .tx = [](mx_device_t* dev, uint32_t options, void* data, size_t length) {
+        static_cast<Device*>(dev->ctx)->WlanTx(options, data, length);
+    },
+    .set_channel = [](mx_device_t* dev, uint32_t options, wlan_channel_t* chan) {
+        return static_cast<Device*>(dev->ctx)->WlanSetChannel(options, chan);
+    },
+};
+
 mx_status_t Device::Bind() {
     std::printf("rt5370::Device::Bind\n");
 
@@ -181,17 +219,7 @@ mx_status_t Device::Bind() {
     status = WriteRegister(gc);
     CHECK_WRITE(GPIO_CTRL, status);
 
-    memset(&device_ops_, 0, sizeof(device_ops_));
-    device_ops_.unbind = &Device::DdkUnbind;
-    device_ops_.release = &Device::DdkRelease;
     device_init(&device_, driver_, "rt5370", &device_ops_);
-
-    memset(&wlanmac_ops_, 0, sizeof(wlanmac_ops_));
-    wlanmac_ops_.query = &Device::DdkWlanQuery;
-    wlanmac_ops_.start = &Device::DdkWlanStart;
-    wlanmac_ops_.stop = &Device::DdkWlanStop;
-    wlanmac_ops_.tx = &Device::DdkWlanTx;
-    wlanmac_ops_.set_channel = &Device::DdkWlanSetChannel;
 
     device_.ctx = this;
     device_.protocol_id = MX_PROTOCOL_WLANMAC;
@@ -2142,26 +2170,26 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     // TODO: configure erp?
     // TODO: configure tx
 
-    // Configure the channel
-    // Need to stop the rx queue first
-    status = StopRxQueue();
-    if (status != NO_ERROR ) {
-        std::printf("rt5370 could not stop rx queue\n");
-        return status;
-    }
-    auto chan = channels_.find(6);
-    assert(chan != channels_.end());
-    status = ConfigureChannel(chan->second);
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not configure channel 11\n");
-        return status;
-    }
+    //// Configure the channel
+    //// Need to stop the rx queue first
+    //status = StopRxQueue();
+    //if (status != NO_ERROR ) {
+    //    std::printf("rt5370 could not stop rx queue\n");
+    //    return status;
+    //}
+    //auto chan = channels_.find(6);
+    //assert(chan != channels_.end());
+    //status = ConfigureChannel(chan->second);
+    //if (status != NO_ERROR) {
+    //    std::printf("rt5370 could not configure channel 11\n");
+    //    return status;
+    //}
 
-    status = ConfigureTxPower(chan->second);
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not configure tx power\n");
-        return status;
-    }
+    //status = ConfigureTxPower(chan->second);
+    //if (status != NO_ERROR) {
+    //    std::printf("rt5370 could not configure tx power\n");
+    //    return status;
+    //}
 
     // TODO: configure retry limit (move this)
     TxRtyCfg trc;
@@ -2205,11 +2233,11 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     status = WriteBbp(BbpRegister<66>(0x1c));
     CHECK_WRITE(BBP66, status);
 
-    status = StartQueues();
-    if (status != NO_ERROR) {
-        std::printf("rt5370 could not start queues\n");
-        return status;
-    }
+    //status = StartQueues();
+    //if (status != NO_ERROR) {
+    //    std::printf("rt5370 could not start queues\n");
+    //    return status;
+    //}
 
     status = SetRxFilter();
     if (status != NO_ERROR) {
@@ -2286,47 +2314,26 @@ mx_status_t Device::WlanSetChannel(uint32_t options, wlan_channel_t* chan) {
     if (channel == channels_.end()) {
         return ERR_NOT_FOUND;
     }
-    auto status = ConfigureChannel(channel->second);
+    auto status = StopRxQueue();
+    if (status != NO_ERROR ) {
+        std::printf("rt5370 could not stop rx queue\n");
+        return status;
+    }
+    status = ConfigureChannel(channel->second);
     if (status != NO_ERROR) {
         return status;
     }
-    return ConfigureTxPower(channel->second);
-}
+    status = ConfigureTxPower(channel->second);
+    if (status != NO_ERROR) {
+        return status;
+    }
+    status = StartQueues();
+    if (status != NO_ERROR) {
+        std::printf("rt5370 could not start queues\n");
+        return status;
+    }
 
-void Device::DdkUnbind(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    dev->Unbind();
-}
-
-mx_status_t Device::DdkRelease(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Release();
-}
-
-mx_status_t Device::DdkWlanQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->WlanQuery(options, info);
-}
-
-mx_status_t Device::DdkWlanStart(mx_device_t* device, wlanmac_ifc_t* ifc, void* cookie) {
-    std::printf("%s\n", __func__);
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->WlanStart(ifc, cookie);
-}
-
-void Device::DdkWlanStop(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->WlanStop();
-}
-
-void Device::DdkWlanTx(mx_device_t* device, uint32_t options, void* data, size_t length) {
-    auto dev = static_cast<Device*>(device->ctx);
-    dev->WlanTx(options, data, length);
-}
-
-mx_status_t Device::DdkWlanSetChannel(mx_device_t* device, uint32_t options, wlan_channel_t* chan) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->WlanSetChannel(options, chan); 
+    return NO_ERROR;
 }
 
 void Device::ReadIotxnComplete(iotxn_t* request, void* cookie) {

@@ -25,20 +25,54 @@ Device::Device(mx_driver_t* driver, mx_device_t* device, wlanmac_protocol_t* wla
 
 Device::~Device() {}
 
+mx_protocol_device_t Device::device_ops_ = {
+    .get_protocol = nullptr,
+    .open = nullptr,
+    .openat = nullptr,
+    .close = nullptr,
+    .unbind = [](mx_device_t* dev) {
+        static_cast<Device*>(dev->ctx)->Unbind();
+    },
+    .release = [](mx_device_t* dev) {
+        return static_cast<Device*>(dev->ctx)->Release();
+    },
+    .read = nullptr,
+    .write = nullptr,
+    .iotxn_queue = nullptr,
+    .get_size = nullptr,
+    .ioctl = &Device::DdkIoctl,
+    .suspend = nullptr,
+    .resume = nullptr,
+};
+
+ethmac_protocol_t Device::ethmac_ops_ = {
+    .query = [](mx_device_t* dev, uint32_t options, ethmac_info_t* info) {
+        return static_cast<Device*>(dev->ctx)->Query(options, info);
+    },
+    .start = [](mx_device_t* dev, ethmac_ifc_t* ifc, void* cookie) {
+        return static_cast<Device*>(dev->ctx)->Start(ifc, cookie);
+    },
+    .stop = [](mx_device_t* dev) {
+        static_cast<Device*>(dev->ctx)->Stop();
+    },
+    .send = [](mx_device_t* dev, uint32_t options, void* data, size_t length) {
+        static_cast<Device*>(dev->ctx)->Send(options, data, length);
+    },
+    .queue_tx = nullptr,
+    .queue_rx = nullptr,
+};
+
+wlanmac_ifc_t Device::wlanmac_ifc_ = {
+    .status = [](void* cookie, uint32_t status) {
+        static_cast<Device*>(cookie)->Status(status);
+    },
+    .recv = [](void* cookie, void* data, size_t length, uint32_t flags) {
+        static_cast<Device*>(cookie)->Recv(data, length, flags);
+    },
+};
+
 mx_status_t Device::Bind() {
-    std::memset(&device_ops_, 0, sizeof(device_ops_));
-    device_ops_.unbind = &Device::DdkUnbind;
-    device_ops_.release = &Device::DdkRelease;
-    device_ops_.ioctl = &Device::DdkIoctl;
     device_init(&device_, driver_, "wlan", &device_ops_);
-
-    ethmac_ops_.query = &Device::EthQuery;
-    ethmac_ops_.start = &Device::EthStart;
-    ethmac_ops_.stop = &Device::EthStop;
-    ethmac_ops_.send = &Device::EthSend;
-
-    wlanmac_ifc_.status = &Device::WlanStatus;
-    wlanmac_ifc_.recv = &Device::WlanRecv;
 
     device_.ctx = this;
     device_.protocol_id = MX_PROTOCOL_ETHERMAC;
@@ -208,6 +242,14 @@ ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_cha
 }
 
 void Device::JoinVermont() {
+    wlan_channel_t chan = { .channel_num = 6 };
+    auto status = wlanmac_ops_->set_channel(wlanmac_device_, 0, &chan);
+    if (status != NO_ERROR) {
+        std::printf("wlan could not set channel to %u\n", chan.channel_num);
+        return;
+    }
+    std::printf("wlan set channel to %u\n", chan.channel_num);
+
     // send ProbeRequests until we find Vermont
     uint8_t probe_req[24 + 18];
     std::memset(probe_req, 0, sizeof(probe_req));
@@ -519,16 +561,6 @@ void Device::SendBeacon(const Beacon& beacon) {
     }
 }
 
-void Device::DdkUnbind(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    dev->Unbind();
-}
-
-mx_status_t Device::DdkRelease(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Release();
-}
-
 ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, size_t in_len,
                          void* out_buf, size_t out_len) {
     auto dev = static_cast<Device*>(device->ctx);
@@ -546,36 +578,6 @@ ssize_t Device::DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, s
     default:
         return ERR_NOT_SUPPORTED;
     }
-}
-
-mx_status_t Device::EthQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Query(options, info);
-}
-
-void Device::EthStop(mx_device_t* device) {
-    auto dev = static_cast<Device*>(device->ctx);
-    dev->Stop();
-}
-
-mx_status_t Device::EthStart(mx_device_t* device, ethmac_ifc_t* ifc, void* cookie) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Start(ifc, cookie);
-}
-
-void Device::EthSend(mx_device_t* device, uint32_t options, void* data, size_t length) {
-    auto dev = static_cast<Device*>(device->ctx);
-    return dev->Send(options, data, length);
-}
-
-void Device::WlanStatus(void* cookie, uint32_t status) {
-    auto dev = static_cast<Device*>(cookie);
-    dev->Status(status);
-}
-
-void Device::WlanRecv(void* cookie, void* data, size_t length, uint32_t flags) {
-    auto dev = static_cast<Device*>(cookie);
-    dev->Recv(data, length, flags);
 }
 
 std::size_t Device::ChannelHasher::operator()(const mx::channel& ch) const {

@@ -50,35 +50,24 @@ class Device {
     void HandleBeacon(FrameControl fc, MgmtFrame* mf, uint32_t flags);
     void SendBeacon(const Beacon& beacon);
 
-    static void DdkUnbind(mx_device_t* device);
-    static mx_status_t DdkRelease(mx_device_t* device);
     static ssize_t DdkIoctl(mx_device_t* device, uint32_t op, const void* in_buf, size_t in_len,
                             void* out_buf, size_t out_len);
-
-    static mx_status_t EthQuery(mx_device_t* device, uint32_t options, ethmac_info_t* info);
-    static void EthStop(mx_device_t* device);
-    static mx_status_t EthStart(mx_device_t* device, ethmac_ifc_t* ifc, void* cookie);
-    static void EthSend(mx_device_t* device, uint32_t options, void* data, size_t length);
-
-
-    static void WlanStatus(void* cookie, uint32_t status);
-    static void WlanRecv(void* cookie, void* data, size_t length, uint32_t flags);
 
     mx_driver_t* driver_;
 
     // Hardware driver
     mx_device_t* wlanmac_device_;
     wlanmac_protocol_t* wlanmac_ops_;
-    wlanmac_ifc_t wlanmac_ifc_ = {};
+    static wlanmac_ifc_t wlanmac_ifc_;
 
     // Ethermac interface
-    ethmac_protocol_t ethmac_ops_;
+    static ethmac_protocol_t ethmac_ops_;
     ethmac_ifc_t* ethmac_ifc_ = nullptr;;
     void* ethmac_cookie_ = nullptr;;
 
     // Generic ddk device
     mx_device_t device_;
-    mx_protocol_device_t device_ops_;
+    static mx_protocol_device_t device_ops_;
 
     std::mutex lock_;
 
@@ -112,6 +101,7 @@ class Device {
         std::unique_ptr<uint8_t[]> frame_body;
         size_t frame_body_len = 0;
 
+        uint16_t channel = 0;
         uint8_t bssid[6];
         uint16_t aid;
     };
