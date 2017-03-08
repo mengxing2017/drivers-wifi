@@ -242,92 +242,21 @@ ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_cha
 }
 
 void Device::JoinVermont() {
-    wlan_channel_t chan = { .channel_num = 6 };
-    auto status = wlanmac_ops_->set_channel(wlanmac_device_, 0, &chan);
-    if (status != NO_ERROR) {
-        std::printf("wlan could not set channel to %u\n", chan.channel_num);
-        return;
-    }
-    std::printf("wlan set channel to %u\n", chan.channel_num);
-
-    // send ProbeRequests until we find Vermont
-    uint8_t probe_req[24 + 18];
-    std::memset(probe_req, 0, sizeof(probe_req));
-
-    FrameControl fc;
-    fc.set_type(kManagement);
-    fc.set_subtype(kProbeRequest);
-    *(uint16_t*)probe_req = fc.val();
-
-    std::memset(probe_req + 4, 0xff, 6);
-    std::memcpy(probe_req + 10, mac_addr_, 6);
-    std::memset(probe_req + 16, 0xff, 6);
-
-    // Used in the while loops
-    SequenceControl sc;
-
-    Element* supp_rates = reinterpret_cast<Element*>(probe_req + 26);
-    supp_rates->id = 1;
-    supp_rates->len = 8;
-    supp_rates->data[0] = 2;
-    supp_rates->data[1] = 4;
-    supp_rates->data[2] = 11;
-    supp_rates->data[3] = 22;
-    supp_rates->data[4] = 12;
-    supp_rates->data[5] = 18;
-    supp_rates->data[6] = 24;
-    supp_rates->data[7] = 36;
-
-    Element* ext_rates = reinterpret_cast<Element*>(probe_req + 36);
-    ext_rates->id = 50;
-    ext_rates->len = 4;
-    ext_rates->data[0] = 48;
-    ext_rates->data[1] = 72;
-    ext_rates->data[2] = 96;
-    ext_rates->data[3] = 108;
-
+    auto status = ERR_NOT_FOUND;
     do {
-        // Always update sequence number before sending
-        sc.set_seq(seqno_++);
-        *(uint16_t*)(probe_req + 22) = sc.val();
-
-        wlanmac_ops_->tx(wlanmac_device_, 0, probe_req, sizeof(probe_req));
-        std::printf("wlan queued ProbeRequest\n");
-
-        std::unique_lock<std::mutex> lock(sov_.lock);
-        auto ret = sov_.cv.wait_for(lock, std::chrono::seconds(1),
-                [this]() { return sov_.frame_body.get() != nullptr; });
-        if (!ret) continue;
-        if (sov_.next_frame.body_len < sizeof(ProbeResponse)) continue;
-
-        // process ProbeResponse
-        ProbeResponse* resp = reinterpret_cast<ProbeResponse*>(sov_.next_frame.body);
-        if (!resp->cap.ess()) continue;
-        if (resp->cap.privacy()) continue;
-        uint8_t* elms = sov_.next_frame.body + sizeof(ProbeResponse);
-        while (elms < sov_.next_frame.body + sov_.next_frame.body_len) {
-            Element* elem = reinterpret_cast<Element*>(elms);
-            if (elem->id == kSsid && elem->len == 7) {
-                if (std::memcmp(elem->data, "Vermont", 7) == 0) {
-                    std::memcpy(sov_.bssid, sov_.next_frame.addr2, ETH_MAC_SIZE);
-                    std::printf("wlan bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
-                            sov_.bssid[0], sov_.bssid[1], sov_.bssid[2],
-                            sov_.bssid[3], sov_.bssid[4], sov_.bssid[5]);
-                    sov_.state = StateOfVermont::State::kAuthenticating;
-                    break;
-                }
-            }
-            elms += elem->len;
-        }
-        sov_.frame_body.release();
-
-    } while (sov_.state == StateOfVermont::State::kProbing);
+        status = FindNetwork(6);
+        if (status != NO_ERROR) mx::nanosleep(MX_SEC(2));
+    } while (status != NO_ERROR);
 
     uint8_t auth_req[24 + 6];
     std::memset(auth_req, 0, sizeof(auth_req));
 
+    FrameControl fc;
+    fc.set_type(kManagement);
     fc.set_subtype(kAuthentication);
     *(uint16_t*)auth_req = fc.val();
+
+    SequenceControl sc;
 
     std::memcpy(auth_req + 4, sov_.bssid, 6);
     std::memcpy(auth_req + 10, mac_addr_, 6);
@@ -382,7 +311,7 @@ void Device::JoinVermont() {
     ssid->len = 7;
     std::memcpy(ssid->data, "Vermont", 7);
 
-    supp_rates = reinterpret_cast<Element*>(assoc_req + 37);
+    Element* supp_rates = reinterpret_cast<Element*>(assoc_req + 37);
     supp_rates->id = 1;
     supp_rates->len = 8;
     supp_rates->data[0] = 2;
@@ -394,7 +323,7 @@ void Device::JoinVermont() {
     supp_rates->data[6] = 24;
     supp_rates->data[7] = 36;
 
-    ext_rates = reinterpret_cast<Element*>(assoc_req + 47);
+    Element* ext_rates = reinterpret_cast<Element*>(assoc_req + 47);
     ext_rates->id = 50;
     ext_rates->len = 4;
     ext_rates->data[0] = 48;
@@ -429,6 +358,108 @@ void Device::JoinVermont() {
         mx_nanosleep(1000000000ull);
     } while (sov_.state == StateOfVermont::State::kAssociating);
     std::printf("wlan joined Vermont aid=%u\n", sov_.aid);
+}
+
+mx_status_t Device::FindNetwork(uint16_t channel_num) {
+    wlan_channel_t chan = { .channel_num = channel_num };
+    auto status = wlanmac_ops_->set_channel(wlanmac_device_, 0, &chan);
+    if (status != NO_ERROR) {
+        std::printf("wlan could not set channel to %u\n", chan.channel_num);
+        return ERR_BAD_STATE;
+    }
+    std::printf("wlan set channel to %u\n", chan.channel_num);
+
+    // send ProbeRequests until we find Vermont
+    uint8_t probe_req[24 + 18];
+    std::memset(probe_req, 0, sizeof(probe_req));
+
+    FrameControl fc;
+    fc.set_type(kManagement);
+    fc.set_subtype(kProbeRequest);
+    *(uint16_t*)probe_req = fc.val();
+
+    std::memset(probe_req + 4, 0xff, 6);
+    std::memcpy(probe_req + 10, mac_addr_, 6);
+    std::memset(probe_req + 16, 0xff, 6);
+
+    // Used in the while loops
+    SequenceControl sc;
+
+    Element* supp_rates = reinterpret_cast<Element*>(probe_req + 26);
+    supp_rates->id = 1;
+    supp_rates->len = 8;
+    supp_rates->data[0] = 2;
+    supp_rates->data[1] = 4;
+    supp_rates->data[2] = 11;
+    supp_rates->data[3] = 22;
+    supp_rates->data[4] = 12;
+    supp_rates->data[5] = 18;
+    supp_rates->data[6] = 24;
+    supp_rates->data[7] = 36;
+
+    Element* ext_rates = reinterpret_cast<Element*>(probe_req + 36);
+    ext_rates->id = 50;
+    ext_rates->len = 4;
+    ext_rates->data[0] = 48;
+    ext_rates->data[1] = 72;
+    ext_rates->data[2] = 96;
+    ext_rates->data[3] = 108;
+
+    // Update sequence number before sending
+    sc.set_seq(seqno_++);
+    *(uint16_t*)(probe_req + 22) = sc.val();
+
+    wlanmac_ops_->tx(wlanmac_device_, 0, probe_req, sizeof(probe_req));
+    std::printf("wlan queued ProbeRequest\n");
+
+    auto timeout = std::chrono::milliseconds(100);
+    auto start_time = mx::time::get(MX_CLOCK_MONOTONIC);
+
+    do {
+        auto delta = mx::time::get(MX_CLOCK_MONOTONIC) - start_time;
+        if (delta > MX_MSEC(100)) break;
+
+        auto duration = timeout - std::chrono::nanoseconds(delta);
+        std::unique_lock<std::mutex> lock(sov_.lock);
+        auto ret = sov_.cv.wait_for(lock, duration,
+            [this]() { return sov_.frame_body.get() != nullptr; });
+        if (!ret) return ERR_NOT_FOUND;
+        if (sov_.next_frame.body_len < sizeof(ProbeResponse)) continue;
+
+        // process ProbeResponse
+        ProbeResponse* resp = reinterpret_cast<ProbeResponse*>(sov_.next_frame.body);
+        if (!resp->cap.ess()) continue;
+        if (resp->cap.privacy()) continue;
+        uint8_t* elms = sov_.next_frame.body + sizeof(ProbeResponse);
+        while (elms < sov_.next_frame.body + sov_.next_frame.body_len) {
+            Element* elem = reinterpret_cast<Element*>(elms);
+            if (elem->id == kSsid && elem->len == 7) {
+                if (std::memcmp(elem->data, "Vermont", 7) == 0) {
+                    std::memcpy(sov_.bssid, sov_.next_frame.addr2, ETH_MAC_SIZE);
+                    std::printf("wlan bssid: %02x:%02x:%02x:%02x:%02x:%02x\n",
+                            sov_.bssid[0], sov_.bssid[1], sov_.bssid[2],
+                            sov_.bssid[3], sov_.bssid[4], sov_.bssid[5]);
+                    sov_.state = StateOfVermont::State::kAuthenticating;
+                    break;
+                }
+            }
+            elms += elem->len;
+        }
+        sov_.frame_body.release();
+    } while (sov_.state == StateOfVermont::State::kProbing);
+
+    if (sov_.state == StateOfVermont::State::kAuthenticating) {
+        return NO_ERROR;
+    }
+    return ERR_NOT_FOUND;
+}
+
+mx_status_t Device::AuthToNetwork() {
+    return NO_ERROR;
+}
+
+mx_status_t Device::AssocToNetwork() {
+    return NO_ERROR;
 }
 
 void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags) {

@@ -2170,27 +2170,6 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     // TODO: configure erp?
     // TODO: configure tx
 
-    //// Configure the channel
-    //// Need to stop the rx queue first
-    //status = StopRxQueue();
-    //if (status != NO_ERROR ) {
-    //    std::printf("rt5370 could not stop rx queue\n");
-    //    return status;
-    //}
-    //auto chan = channels_.find(6);
-    //assert(chan != channels_.end());
-    //status = ConfigureChannel(chan->second);
-    //if (status != NO_ERROR) {
-    //    std::printf("rt5370 could not configure channel 11\n");
-    //    return status;
-    //}
-
-    //status = ConfigureTxPower(chan->second);
-    //if (status != NO_ERROR) {
-    //    std::printf("rt5370 could not configure tx power\n");
-    //    return status;
-    //}
-
     // TODO: configure retry limit (move this)
     TxRtyCfg trc;
     status = ReadRegister(&trc);
@@ -2232,12 +2211,6 @@ mx_status_t Device::WlanStart(wlanmac_ifc_t* ifc, void* cookie) {
     CHECK_WRITE(BBP1, status);
     status = WriteBbp(BbpRegister<66>(0x1c));
     CHECK_WRITE(BBP66, status);
-
-    //status = StartQueues();
-    //if (status != NO_ERROR) {
-    //    std::printf("rt5370 could not start queues\n");
-    //    return status;
-    //}
 
     status = SetRxFilter();
     if (status != NO_ERROR) {

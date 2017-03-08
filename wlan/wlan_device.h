@@ -106,6 +106,10 @@ class Device {
         uint16_t aid;
     };
     StateOfVermont sov_;
+
+    mx_status_t FindNetwork(uint16_t channel_num);
+    mx_status_t AuthToNetwork();
+    mx_status_t AssocToNetwork();
 };
 
 }  // namespace wlan
