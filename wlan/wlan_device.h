@@ -97,6 +97,7 @@ class Device {
 
         State state = State::kProbing;
         std::condition_variable cv;
+        FrameControl next_fc;
         MgmtFrame next_frame;
         std::unique_ptr<uint8_t[]> frame_body;
         size_t frame_body_len = 0;
