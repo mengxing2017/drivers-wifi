@@ -549,17 +549,32 @@ Device::StateOfVermont::State Device::AssocToNetwork() {
 }
 
 Device::StateOfVermont::State Device::WaitForStateChange() {
-    std::unique_lock<std::mutex> lock(sov_.lock);
-    sov_.cv.wait(lock, [this]() { return sov_.ready(); });
-    if (sov_.dead()) return sov_.state;
+    while (true) {
+        std::unique_lock<std::mutex> lock(sov_.lock);
+        auto ret = sov_.cv.wait_for(lock, std::chrono::seconds(1),
+                [this]() { return sov_.ready(); });
+        if (sov_.dead()) return sov_.state;
 
-    switch (sov_.next_fc.subtype()) {
-        case kDisassociation:
-            return StateOfVermont::State::kAssociating;
-        case kDeauthentication:
-            return StateOfVermont::State::kAuthenticating;
-        default:
-            return sov_.state;
+        auto now = mx::time::get(MX_CLOCK_MONOTONIC);
+        if (now - sov_.last_beacon > MX_SEC(1)) {
+            std::printf("wlan no beacons for 1 second, resetting\n");
+            std::memset(sov_.bssid, 0, 6);
+            sov_.aid = 0;
+            sov_.retries = 0;
+            sov_.frame_body.release();
+            return StateOfVermont::State::kProbing;
+        }
+
+        if (ret) {
+            switch (sov_.next_fc.subtype()) {
+                case kDisassociation:
+                    return StateOfVermont::State::kAssociating;
+                case kDeauthentication:
+                    return StateOfVermont::State::kAuthenticating;
+                default:
+                    return sov_.state;
+            }
+        }
     }
 }
 
@@ -633,6 +648,9 @@ void Device::HandleBeacon(FrameControl fc, MgmtFrame* mf, uint32_t flags) {
             case kSsid:
                 bcn.ssid_len = std::min(data[1], static_cast<uint8_t>(32));
                 std::memcpy(bcn.ssid, &data[2], bcn.ssid_len);
+                if (std::memcmp(bcn.ssid, "Vermont", 7) == 0) {
+                    sov_.last_beacon = mx::time::get(MX_CLOCK_MONOTONIC);
+                }
                 break;
             case kSuppRates: {
                 int num_rates = std::min(data[1], static_cast<uint8_t>(8));

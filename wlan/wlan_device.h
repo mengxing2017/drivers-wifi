@@ -115,6 +115,7 @@ class Device {
         uint16_t channel = 0;
         uint8_t bssid[6];
         uint16_t aid;
+        mx_time_t last_beacon = 0;
     };
     StateOfVermont sov_;
 
