@@ -88,15 +88,25 @@ class Device {
         std::thread thr;
         std::mutex lock;
 
+        bool ready() const {
+            return (state == State::kDead) || (frame_body.get() != nullptr);
+        }
+        bool dead() const {
+            return state == State::kDead;
+        }
+
         enum class State {
             kProbing,
             kAuthenticating,
             kAssociating,
             kJoined,
+            kError,
+            kDead,
         };
 
         State state = State::kProbing;
         std::condition_variable cv;
+        uint8_t retries = 0;
         FrameControl next_fc;
         MgmtFrame next_frame;
         std::unique_ptr<uint8_t[]> frame_body;
@@ -108,9 +118,10 @@ class Device {
     };
     StateOfVermont sov_;
 
-    mx_status_t FindNetwork(uint16_t channel_num);
-    mx_status_t AuthToNetwork();
-    mx_status_t AssocToNetwork();
+    StateOfVermont::State FindNetwork(uint16_t channel_num);
+    StateOfVermont::State AuthToNetwork();
+    StateOfVermont::State AssocToNetwork();
+    StateOfVermont::State WaitForStateChange();
 };
 
 }  // namespace wlan

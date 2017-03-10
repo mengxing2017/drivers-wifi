@@ -89,6 +89,12 @@ mx_status_t Device::Bind() {
 
 void Device::Unbind() {
     std::printf("wlan::Device::Unbind\n");
+    {
+        std::lock_guard<std::mutex> lock(sov_.lock);
+        sov_.state = StateOfVermont::State::kDead;
+        sov_.cv.notify_one();
+    }
+
     device_remove(&device_);
 }
 
@@ -242,38 +248,75 @@ ssize_t Device::StartScan(const wlan_start_scan_args* args, mx_handle_t* out_cha
 }
 
 void Device::JoinVermont() {
-    auto status = NO_ERROR;
-    do {
-        if (status != NO_ERROR) mx::nanosleep(MX_SEC(2));
-
-        for (uint16_t c = 1; c <= 11; c++) {
-            status = FindNetwork(c);
-            if (status == NO_ERROR) break;
+    while (true) {
+        switch (sov_.state) {
+        case StateOfVermont::State::kProbing: {
+            auto next = StateOfVermont::State::kProbing;
+            for (uint16_t c = 1; c <= 11; c++) {
+                next = FindNetwork(c);
+                if (next != StateOfVermont::State::kProbing) {
+                    sov_.state = next;
+                    sov_.retries = 0;
+                    break;
+                }
+            }
+            if (sov_.state == StateOfVermont::State::kProbing) {
+                mx::nanosleep(MX_SEC(2));
+            }
+            break;
         }
-    } while (status != NO_ERROR);
-    sov_.state = StateOfVermont::State::kAuthenticating;
-
-    do {
-        if (status != NO_ERROR) mx::nanosleep(MX_SEC(2));
-        status = AuthToNetwork();
-    } while (status != NO_ERROR);
-    sov_.state = StateOfVermont::State::kAssociating;
-
-    do {
-        if (status != NO_ERROR) mx::nanosleep(MX_SEC(1));
-        status = AssocToNetwork();
-    } while (status != NO_ERROR);
-    sov_.state = StateOfVermont::State::kJoined;
-
-    std::printf("wlan joined Vermont aid=%u\n", sov_.aid);
+        case StateOfVermont::State::kAuthenticating: {
+            auto next = AuthToNetwork();
+            if (next == sov_.state) {
+                if (++sov_.retries > 5) {
+                    sov_.state = StateOfVermont::State::kProbing;
+                } else {
+                    mx::nanosleep(MX_SEC(2));
+                }
+            } else {
+                sov_.state = next;
+                sov_.retries = 0;
+            }
+            break;
+        }
+        case StateOfVermont::State::kAssociating: {
+            auto next = AssocToNetwork();
+            if (next == sov_.state) {
+                if (++sov_.retries > 5) {
+                    sov_.state = StateOfVermont::State::kProbing;
+                } else {
+                    mx::nanosleep(MX_SEC(1));
+                }
+            } else {
+                sov_.state = next;
+                sov_.retries = 0;
+            }
+            break;
+        }
+        case StateOfVermont::State::kJoined: {
+            sov_.state = WaitForStateChange();
+            break;
+        }
+        case StateOfVermont::State::kError: {
+            std::printf("wlan !!!ERROR!!! sleeping 5 seconds and restarting join...\n");
+            mx::nanosleep(MX_SEC(5));
+            sov_.state = StateOfVermont::State::kProbing;
+            break;
+        }
+        case StateOfVermont::State::kDead: {
+            std::printf("wlan exiting loop\n");
+            return;
+        }
+        }
+    }
 }
 
-mx_status_t Device::FindNetwork(uint16_t channel_num) {
+Device::StateOfVermont::State Device::FindNetwork(uint16_t channel_num) {
     wlan_channel_t chan = { .channel_num = channel_num };
     auto status = wlanmac_ops_->set_channel(wlanmac_device_, 0, &chan);
     if (status != NO_ERROR) {
         std::printf("wlan could not set channel to %u\n", chan.channel_num);
-        return ERR_BAD_STATE;
+        return StateOfVermont::State::kError;
     }
     std::printf("wlan set channel to %u\n", chan.channel_num);
     sov_.channel = channel_num;
@@ -329,9 +372,9 @@ mx_status_t Device::FindNetwork(uint16_t channel_num) {
 
         auto duration = timeout - std::chrono::nanoseconds(delta);
         std::unique_lock<std::mutex> lock(sov_.lock);
-        auto ret = sov_.cv.wait_for(lock, duration,
-            [this]() { return sov_.frame_body.get() != nullptr; });
-        if (!ret) return ERR_NOT_FOUND;
+        auto ret = sov_.cv.wait_for(lock, duration, [this]() { return sov_.ready(); });
+        if (sov_.state == StateOfVermont::State::kDead) return sov_.state;
+        if (!ret) return StateOfVermont::State::kProbing;
         if (sov_.next_fc.subtype() != kProbeResponse) continue;
         if (sov_.next_frame.body_len < sizeof(ProbeResponse)) continue;
 
@@ -357,10 +400,10 @@ mx_status_t Device::FindNetwork(uint16_t channel_num) {
         sov_.frame_body.release();
     } while (!found);
 
-    return found ? NO_ERROR : ERR_NOT_FOUND;
+    return found ? StateOfVermont::State::kAuthenticating : StateOfVermont::State::kProbing;
 }
 
-mx_status_t Device::AuthToNetwork() {
+Device::StateOfVermont::State Device::AuthToNetwork() {
     uint8_t auth_req[24 + 6];
     std::memset(auth_req, 0, sizeof(auth_req));
 
@@ -385,15 +428,15 @@ mx_status_t Device::AuthToNetwork() {
     auto timeout = std::chrono::milliseconds(100);
     auto start_time = mx::time::get(MX_CLOCK_MONOTONIC);
 
-    bool associated = false;
+    bool authenticated = false;
     do {
         auto delta = std::chrono::nanoseconds(mx::time::get(MX_CLOCK_MONOTONIC) - start_time);
         if (delta > timeout) break;
 
         auto duration = timeout - std::chrono::nanoseconds(delta);
         std::unique_lock<std::mutex> lock(sov_.lock);
-        auto ret = sov_.cv.wait_for(lock, duration,
-                [this]() { return sov_.frame_body.get() != nullptr; });
+        auto ret = sov_.cv.wait_for(lock, duration, [this]() { return sov_.ready(); });
+        if (sov_.dead()) return sov_.state;
         if (!ret) break;
         if (sov_.next_fc.subtype() != kAuthentication) continue;
 
@@ -405,15 +448,15 @@ mx_status_t Device::AuthToNetwork() {
             std::printf("auth failure\n");
             break;
         } else {
-            associated = true;
+            authenticated = true;
         }
         sov_.frame_body.release();
-    } while (!associated);
+    } while (!authenticated);
 
-    return associated ? NO_ERROR : ERR_IO_REFUSED;
+    return authenticated ? StateOfVermont::State::kAssociating : StateOfVermont::State::kAuthenticating;
 }
 
-mx_status_t Device::AssocToNetwork() {
+Device::StateOfVermont::State Device::AssocToNetwork() {
     uint8_t assoc_req[24 + 25];
     std::memset(assoc_req, 0, sizeof(assoc_req));
 
@@ -476,9 +519,14 @@ mx_status_t Device::AssocToNetwork() {
 
         auto duration = timeout - std::chrono::nanoseconds(delta);
         std::unique_lock<std::mutex> lock(sov_.lock);
-        auto ret = sov_.cv.wait_for(lock, duration,
-                [this]() { return sov_.frame_body.get() != nullptr; });
+        auto ret = sov_.cv.wait_for(lock, duration, [this]() { return sov_.ready(); });
+        if (sov_.dead()) return sov_.state;
         if (!ret) continue;
+        auto subtype = sov_.next_fc.subtype();
+        if (subtype == kDeauthentication) {
+            sov_.frame_body.release();
+            return StateOfVermont::State::kAuthenticating;
+        }
         if (sov_.next_fc.subtype() != kAssociationResponse) continue;
 
         // process AssociationResponse
@@ -492,11 +540,27 @@ mx_status_t Device::AssocToNetwork() {
         } else {
             associated = true;
             sov_.aid = assoc_aid;
+            std::printf("wlan joined Vermont aid=%u\n", sov_.aid);
         }
         sov_.frame_body.release();
     } while (!associated);
 
-    return associated ? NO_ERROR : ERR_IO_REFUSED;
+    return associated ? StateOfVermont::State::kJoined : StateOfVermont::State::kAssociating;
+}
+
+Device::StateOfVermont::State Device::WaitForStateChange() {
+    std::unique_lock<std::mutex> lock(sov_.lock);
+    sov_.cv.wait(lock, [this]() { return sov_.ready(); });
+    if (sov_.dead()) return sov_.state;
+
+    switch (sov_.next_fc.subtype()) {
+        case kDisassociation:
+            return StateOfVermont::State::kAssociating;
+        case kDeauthentication:
+            return StateOfVermont::State::kAuthenticating;
+        default:
+            return sov_.state;
+    }
 }
 
 void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint32_t flags) {
@@ -530,7 +594,9 @@ void Device::HandleMgmtFrame(FrameControl fc, uint8_t* data, size_t length, uint
             break;
         case kProbeResponse:
         case kAuthentication:
+        case kDeauthentication:
         case kAssociationResponse:
+        case kDisassociation:
             std::printf("wlan response subtype=%02x len=%zu\n", fc.subtype(), mf.body_len);
             for (size_t i = 0; i < mf.body_len; i++) {
                 std::printf("%02x ", mf.body[i]);
