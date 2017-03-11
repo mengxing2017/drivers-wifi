@@ -100,6 +100,9 @@ void Device::Unbind() {
 
 mx_status_t Device::Release() {
     std::printf("wlan::Device::Release\n");
+    if (sov_.thr.joinable()) {
+        sov_.thr.join();
+    }
     delete this;
     return NO_ERROR;
 }
@@ -126,7 +129,7 @@ mx_status_t Device::Start(ethmac_ifc_t* ifc, void* cookie) {
     }
 
     sov_.thr = std::thread(&Device::JoinVermont, this);
-    sov_.thr.detach();
+    //sov_.thr.detach();
 
     return status;
 }
@@ -300,7 +303,9 @@ void Device::JoinVermont() {
         case StateOfVermont::State::kError: {
             std::printf("wlan !!!ERROR!!! sleeping 5 seconds and restarting join...\n");
             mx::nanosleep(MX_SEC(5));
-            sov_.state = StateOfVermont::State::kProbing;
+            if (sov_.state != StateOfVermont::State::kDead) {
+                sov_.state = StateOfVermont::State::kProbing;
+            }
             break;
         }
         case StateOfVermont::State::kDead: {
